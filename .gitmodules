@@ -1,3 +1,3 @@
 [submodule "wct"]
 	path = wct
-	url = https://github.com/pietrocarbo/deep-transfer.git
+	url = https://github.com/pietrocarbo/deep-transfer
