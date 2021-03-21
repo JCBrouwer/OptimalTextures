@@ -1,7 +1,14 @@
+import os
+import random
+
 import numpy as np
 import torch
-import torch.nn.functional as F
 from PIL import Image
+from tqdm import tqdm
+
+from histmatch import *
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 def swap_color_channel(target, source, colorspace="HSV"):  # YCbCr also works
@@ -11,83 +18,94 @@ def swap_color_channel(target, source, colorspace="HSV"):  # YCbCr also works
     return Image.merge(colorspace, target_channels).convert("RGB")
 
 
-def match_histogram(target, source, eps=1e-2):
-    """Based on https://github.com/ProGamerGov/Neural-Tools/blob/master/linear-color-transfer.py#L36"""
-
-    mu_t = target.mean((2, 3), keepdim=True)
-    hist_t = (target - mu_t).reshape(target.size(1), -1)  # [b, c, h * w]
-    cov_t = torch.mm(hist_t, hist_t.T) / hist_t.shape[1] + eps * torch.eye(hist_t.shape[0])
-    eigval_t, eigvec_t = torch.symeig(cov_t, eigenvectors=True, upper=True)
-    E_t = torch.sqrt(torch.diagflat(eigval_t))
-    E_t[E_t != E_t] = 0  # Convert nan to 0
-    Q_t = torch.mm(torch.mm(eigvec_t, E_t), eigvec_t.T)
-
-    mu_s = source.mean((2, 3), keepdim=True)
-    hist_s = (source - mu_s).reshape(source.size(1), -1)
-    cov_s = torch.mm(hist_s, hist_s.T) / hist_s.shape[1] + eps * torch.eye(hist_s.shape[0])
-    eigval_s, eigvec_s = torch.symeig(cov_s, eigenvectors=True, upper=True)
-    E_s = torch.sqrt(torch.diagflat(eigval_s))
-    E_s[E_s != E_s] = 0
-    Q_s = torch.mm(torch.mm(eigvec_s, E_s), eigvec_s.T)
-
-    matched = torch.mm(torch.mm(Q_s, torch.inverse(Q_t)), hist_t)
-    matched = matched.reshape(*target.shape) + mu_s
-    matched = matched.clamp(0, 1)
-
-    return matched
+def match_histogram(target, source, strategy="cdf"):
+    if strategy == "pca":
+        return pca_match(target, source)
+    else:
+        return cdf_match(target, source)
 
 
-def gram_schmidt(vv):
-    """From https://github.com/legendongary/pytorch-gram-schmidt"""
+def random_rotation(N):
+    """
+    Draws random N-dimensional rotation matrix (det = 1, inverse = transpose)
 
-    nk = vv.size(0)
-    uu = torch.zeros_like(vv, device=vv.device)
-    uu[:, 0] = vv[:, 0].clone()
-    for k in range(1, nk):
-        vk = vv[k].clone()
-        uk = 0
-        for j in range(0, k):
-            uj = uu[:, j].clone()
-            uk = uk + vk.dot(uj) / uj.dot(uj) * uj
-        uu[:, k] = vk - uk
-    for k in range(nk):
-        uk = uu[:, k].clone()
-        uu[:, k] = uk / uk.norm()
-    return uu
-
-
-def random_basis(N):
-    vec = torch.randn(1, N)
-    vec /= vec.norm()
-    return gram_schmidt(vec)
+    From https://github.com/scipy/scipy/blob/5ab7426247900db9de856e790b8bea1bd71aec49/scipy/stats/_multivariate.py#L3309
+    """
+    H = torch.eye(N, device=device)
+    D = torch.empty((N,), device=device)
+    for n in range(N - 1):
+        x = torch.randn(N - n, device=device)
+        norm2 = torch.dot(x, x)
+        x0 = x[0].item()
+        D[n] = torch.sign(x[0]) if x[0] != 0 else 1
+        x[0] += D[n] * torch.sqrt(norm2)
+        x /= torch.sqrt((norm2 - x0 ** 2 + x[0] ** 2) / 2.0)
+        H[:, n:] -= torch.outer(H[:, n:] @ x, x)
+    D[-1] = (-1) ** (N - 1) * D[:-1].prod()
+    H = (D * H.T).T
+    return H
 
 
-def project(tensor, basis):
-    return torch.mm(tensor.reshape(tensor.size(1), -1).t(), basis).reshape(tensor.shape)
-
-
-def deproject(tensor, basis):
-    return torch.div(tensor.reshape(tensor.size(1), -1).t(), basis).reshape(tensor.shape)
+def rotate(tens, rot):
+    return (tens.view(tens.size(1), -1).T @ rot).view(tens.shape)
 
 
 def optimal_transport(output, style, passes):
     N = output.shape[1]  # channels
-    for _ in range(int(N / passes)):
-        basis = random_basis(N)
-        rotated_style = project(style, basis)
-        rotated_output = project(output, basis)
+    for _ in tqdm(range(int(N / passes))):
+        rotation = random_rotation(N)
+        rotated_style = rotate(style, rotation)
+        rotated_output = rotate(output, rotation)
         matched_output = match_histogram(rotated_output, rotated_style)
-        output = deproject(matched_output, basis)
+        output = rotate(matched_output, rotation.T)
     return output
 
 
 if __name__ == "__main__":
+    seed = 42
+    os.environ["PYTHONHASHSEED"] = str(seed)
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+    random.seed(seed)
+
+    mat = torch.randn(8, 8)
+    rot = random_rotation(8)
+    assert rot.det() == 1
+    assert (mat @ rot @ rot.T).allclose(mat, rtol=5e-5)  # relative tolerance 5x higher than default
+
+    import matplotlib.pyplot as plt
+
     contim = np.asarray(Image.open("../content/-166.jpg"))
     content = torch.from_numpy(contim).permute(2, 0, 1)[None, ...].float() / 255
     stylim = np.asarray(Image.open("../style/candy.jpg").resize((contim.shape[1], contim.shape[0])))
     style = torch.from_numpy(stylim).permute(2, 0, 1)[None, ...].float() / 255
-    matched = (match_histogram(content, style) * 255)[0].permute(1, 2, 0).numpy().astype(np.uint8)
-    Image.fromarray(np.concatenate((contim, stylim, matched), axis=1)).save("hist_match.png")
+
+    matched = (pca_match(content, style) * 255)[0].permute(1, 2, 0).numpy().astype(np.uint8)
+    Image.fromarray(np.concatenate((contim, stylim, matched), axis=1)).save("pca_match.png")
+
+    fig, ax = plt.subplots(1, 3)
+    ax[0].hist(contim.reshape(3, -1).sum(0), bins=128)
+    ax[1].hist(stylim.reshape(3, -1).sum(0), bins=128)
+    ax[2].hist(matched.reshape(3, -1).sum(0), bins=128)
+    plt.show()
+
+    matched = (cdf_match(content, style, False) * 255)[0].permute(1, 2, 0).numpy().astype(np.uint8)
+    Image.fromarray(np.concatenate((contim, stylim, matched), axis=1)).save("cdf_match1.png")
+
+    fig, ax = plt.subplots(1, 3)
+    ax[0].hist(contim.reshape(3, -1).sum(0), bins=128)
+    ax[1].hist(stylim.reshape(3, -1).sum(0), bins=128)
+    ax[2].hist(matched.reshape(3, -1).sum(0), bins=128)
+    plt.show()
+
+    matched = (cdf_match(content, style, True) * 255)[0].permute(1, 2, 0).numpy().astype(np.uint8)
+    Image.fromarray(np.concatenate((contim, stylim, matched), axis=1)).save("cdf_match2.png")
+
+    fig, ax = plt.subplots(1, 3)
+    ax[0].hist(contim.reshape(3, -1).sum(0), bins=128)
+    ax[1].hist(stylim.reshape(3, -1).sum(0), bins=128)
+    ax[2].hist(matched.reshape(3, -1).sum(0), bins=128)
+    plt.show()
 
     contim = Image.open("../content/-166.jpg")
     stylim = Image.open("../style/candy.jpg")
