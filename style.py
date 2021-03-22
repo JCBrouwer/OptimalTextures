@@ -72,4 +72,4 @@ if __name__ == "__main__":
             with Decoder(layer).to(device) as decoder:
                 output = decoder(output_layer)
 
-    torchvision.utils.save_image(torch.cat(style.cpu(), output.cpu()), "output/texture.png")
+    torchvision.utils.save_image(torch.cat((style.cpu(), output.cpu())), "output/texture.png")
