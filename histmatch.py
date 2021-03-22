@@ -1,6 +1,6 @@
 import torch
 
-dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+device = torch.device("cpu")  # "cuda" if torch.cuda.is_available() else "cpu")
 
 
 def swap_color_channel(target, source, colorspace="HSV"):  # YCbCr also works
@@ -24,7 +24,7 @@ def pca_match(target, source, eps=1e-2):
 
     mu_t = target.mean((2, 3), keepdim=True)
     hist_t = (target - mu_t).view(target.size(1), -1)  # [c, b * h * w]
-    cov_t = hist_t @ hist_t.T / hist_t.shape[1] + eps * torch.eye(hist_t.shape[0], device=dev)
+    cov_t = hist_t @ hist_t.T / hist_t.shape[1] + eps * torch.eye(hist_t.shape[0], device=device)
 
     eigval_t, eigvec_t = torch.symeig(cov_t, eigenvectors=True, upper=True)
     E_t = torch.sqrt(torch.diagflat(eigval_t))
@@ -33,7 +33,7 @@ def pca_match(target, source, eps=1e-2):
 
     mu_s = source.mean((2, 3), keepdim=True)
     hist_s = (source - mu_s).view(source.size(1), -1)
-    cov_s = hist_s @ hist_s.T / hist_s.shape[1] + eps * torch.eye(hist_s.shape[0], device=dev)
+    cov_s = hist_s @ hist_s.T / hist_s.shape[1] + eps * torch.eye(hist_s.shape[0], device=device)
 
     eigval_s, eigvec_s = torch.symeig(cov_s, eigenvectors=True, upper=True)
     E_s = torch.sqrt(torch.diagflat(eigval_s))
@@ -64,9 +64,9 @@ def cdf_match(target, source):
 
     hist = source_hist * n / source_hist.sum(1).unsqueeze(1)
     cum_source = hist.cumsum(1)
-    cum_prev = torch.cat([torch.zeros(c, 1).to(dev), cum_source[:, :-1]], 1)
+    cum_prev = torch.cat([torch.zeros(c, 1).to(device), cum_source[:, :-1]], 1)
 
-    rng = torch.arange(1, n + 1).unsqueeze(0).float().to(dev)
+    rng = torch.arange(1, n + 1).unsqueeze(0).float().to(device)
     idx = (cum_source.unsqueeze(1) - rng.unsqueeze(2) < 0).sum(2).long()
 
     step = (maxes - mins) / n_bins

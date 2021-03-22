@@ -12,15 +12,15 @@ from style import *
 
 if __name__ == "__main__":
     # rotations
-    mat = torch.randn(8, 8, device=dev)
+    mat = torch.randn(8, 8, device=device)
     rot = random_rotation(8)
     assert rot.det().allclose(torch.tensor(1.0))
     assert (mat @ rot @ rot.T).allclose(mat, rtol=1e-4)  # relative tolerance 10x higher than default
 
     # histogram matching
-    contim = np.asarray(Image.open("content/-166.jpg"))
+    contim = np.asarray(Image.open("content/-166.jpg").convert("RGB"))
     content = (torch.from_numpy(contim).permute(2, 0, 1)[None, ...].float() / 255).to(device)
-    stylim = np.asarray(Image.open("style/candy.jpg").resize((contim.shape[1], contim.shape[0])))
+    stylim = np.asarray(Image.open("style/candy.jpg").convert("RGB").resize((contim.shape[1], contim.shape[0])))
     style = (torch.from_numpy(stylim).permute(2, 0, 1)[None, ...].float() / 255).to(device)
 
     num_repeats = 100
