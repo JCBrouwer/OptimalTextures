@@ -11,7 +11,7 @@ import util
 import torchvision
 
 torch.set_grad_enabled(False)
-device = torch.device("cpu")  # "cuda" if torch.cuda.is_available() else "cpu")
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 def random_rotation(N):
