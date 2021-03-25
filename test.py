@@ -11,23 +11,17 @@ from vgg import Decoder, Encoder
 if __name__ == "__main__":
 
     # encode decode uniform noise
-    print("noise")
     fig, ax = plt.subplots(2, 5, figsize=(16, 9))
     og_style = util.load_image("style/graffiti256.jpg")
     output = torch.rand_like(og_style)
     ax[0, 2].imshow(output.clamp(0, 1).cpu().detach().squeeze().permute(1, 2, 0).numpy())
-    for layer in range(1, 6):
-        # print(layer)
+    for layer in range(5, 0, -1):
         with Encoder(layer).to(device) as encoder, Decoder(layer).to(device) as decoder:
-            # print(output.min().cpu().item(), output.mean().cpu().item(), output.max().cpu().item())
             style_layer = encoder(og_style)
             b, c, h, w = style_layer.shape
             style_layer = style_layer.reshape(-1, c)
             output_layer = encoder(output).reshape(-1, c)
-
-            # print(output_layer.min().cpu().item(), output_layer.mean().cpu().item(), output_layer.max().cpu().item())
             output = decoder(output_layer.reshape(b, c, h, w))
-            # print(output.min().cpu().item(), output.mean().cpu().item(), output.max().cpu().item())
             ax[1, layer - 1].imshow(output.clamp(0, 1).squeeze().permute(1, 2, 0).cpu().numpy())
     [fig.delaxes(ax.flatten()[i]) for i in [0, 1, 3, 4]]
     plt.tight_layout()
@@ -35,25 +29,15 @@ if __name__ == "__main__":
     plt.show(block=False)
 
     # encode decode style
-    print("style")
     fig, ax = plt.subplots(2, 5, figsize=(16, 9))
     og_style = util.load_image("style/graffiti256.jpg")
     ax[0, 2].imshow(og_style.clamp(0, 1).squeeze().permute(1, 2, 0).cpu().numpy())
-    for layer in range(1, 6):
-        # print(layer)
+    for layer in range(5, 0, -1):
         with Encoder(layer).to(device) as encoder, Decoder(layer).to(device) as decoder:
-            # print(og_style.min().cpu().item(), og_style.mean().cpu().item(), og_style.max().cpu().item())
-
-            style_layer = (
-                encoder(og_style).squeeze().permute(1, 2, 0)
-            )  # remove batch channel and move channels to last axis
+            style_layer = encoder(og_style).squeeze().permute(1, 2, 0)
             h, w, c = style_layer.shape
-            style_layer = style_layer.reshape(-1, c)  # [pixels, channels]
-            # print(style_layer.min().cpu().item(), style_layer.mean().cpu().item(), style_layer.max().cpu().item())
-
+            style_layer = style_layer.reshape(-1, c)
             style = decoder(style_layer.T.reshape(1, c, h, w))
-            # print(style.min().cpu().item(), style.mean().cpu().item(), style.max().cpu().item())
-
             ax[1, layer - 1].imshow(style.clamp(0, 1).squeeze().permute(1, 2, 0).cpu().numpy())
     [fig.delaxes(ax.flatten()[i]) for i in [0, 1, 3, 4]]
     plt.tight_layout()
@@ -61,50 +45,24 @@ if __name__ == "__main__":
     plt.show(block=False)
 
     # encode decode transport
-    print("transport")
     fig, ax = plt.subplots(2, 5, figsize=(16, 9))
     og_style = util.load_image("style/graffiti256.jpg")
     output = torch.rand_like(og_style)
     ax[0, 2].imshow(output.clamp(0, 1).cpu().squeeze().permute(1, 2, 0).numpy())
-    for layer in range(1, 6):
-        # print(layer)
+    for layer in range(5, 0, -1):
         with Encoder(layer).to(device) as encoder, Decoder(layer).to(device) as decoder:
-            # print(output.min().cpu().item(), output.mean().cpu().item(), output.max().cpu().item())
-
-            style_layer = (
-                encoder(og_style).squeeze().permute(1, 2, 0)
-            )  # remove batch channel and move channels to last axis
-            style_layer = style_layer.reshape(-1, style_layer.shape[2])  # [pixels, channels]
-            # print(style_layer.min().cpu().item(), style_layer.mean().cpu().item(), style_layer.max().cpu().item())
-
+            style_layer = encoder(og_style).squeeze().permute(1, 2, 0)
+            style_layer = style_layer.reshape(-1, style_layer.shape[2])
             output_layer = encoder(output).squeeze().permute(1, 2, 0)
             h, w, c = output_layer.shape
-            output_layer = output_layer.reshape(-1, c)  # [pixels, channels]
-            # print(output_layer.min().cpu().item(), output_layer.mean().cpu().item(), output_layer.max().cpu().item())
-
-            for _ in range(3):
+            output_layer = output_layer.reshape(-1, c)
+            for _ in range(10):
                 rotation = random_rotation(c)
-
                 proj_s = style_layer @ rotation
                 proj_o = output_layer @ rotation
-                # print(proj_s.shape, proj_o.shape)
-
-                # match_o = hist_match(proj_o, proj_s)
-                # print(match_o.min(), match_o.mean(), match_o.max())
-                match_o = cdf_match(proj_o, proj_s)
-                # print(match_o.min(), match_o.mean(), match_o.max())
-                # match_o = pca_match(proj_o, proj_s)
-                # print(match_o.min(), match_o.mean(), match_o.max())
-
+                match_o = hist_match(proj_o, proj_s)
                 output_layer = match_o @ rotation.T
-                # print(
-                #     output_layer.min().cpu().item(), output_layer.mean().cpu().item(), output_layer.max().cpu().item()
-                # )
-
-            # print(style_layer.min().cpu().item(), style_layer.mean().cpu().item(), style_layer.max().cpu().item())
-            # print(output_layer.min().cpu().item(), output_layer.mean().cpu().item(), output_layer.max().cpu().item())
             output = decoder(output_layer.T.reshape(1, c, h, w))
-            # print(output.min().cpu().item(), output.mean().cpu().item(), output.max().cpu().item())
             ax[1, layer - 1].imshow(output.clamp(0, 1).squeeze().permute(1, 2, 0).cpu().numpy())
     [fig.delaxes(ax.flatten()[i]) for i in [0, 1, 3, 4]]
     plt.tight_layout()

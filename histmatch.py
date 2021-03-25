@@ -40,6 +40,43 @@ def old_pca_match(target, source, eps=1e-2):
     return matched
 
 
+def pca_match(target, source, eps=1e-2):
+    """From https://github.com/ProGamerGov/Neural-Tools/blob/master/linear-color-transfer.py#L36"""
+    npx, nc = target.shape
+    # print(target.shape, source.shape)
+
+    mu_t = target.mean(0)
+    hist_t = (target - mu_t).T
+    # print(hist_t.shape)
+    cov_t = hist_t @ hist_t.T / npx + eps * torch.eye(nc, device=device)
+    # print(cov_t.shape)
+
+    eigval_t, eigvec_t = torch.symeig(cov_t, eigenvectors=True, upper=True)
+    E_t = torch.sqrt(torch.diagflat(eigval_t))
+    E_t[E_t != E_t] = 0  # Convert nan to 0
+    Q_t = (eigvec_t @ E_t) @ eigvec_t.T
+    # print(Q_t.shape)
+
+    mu_s = source.mean(0)
+    # print(mu_s.shape)
+    hist_s = (source - mu_s).T
+    cov_s = hist_s @ hist_s.T / npx + eps * torch.eye(nc, device=device)
+
+    eigval_s, eigvec_s = torch.symeig(cov_s, eigenvectors=True, upper=True)
+    E_s = torch.sqrt(torch.diagflat(eigval_s))
+    E_s[E_s != E_s] = 0
+    Q_s = (eigvec_s @ E_s) @ eigvec_s.T
+
+    matched = (Q_s @ torch.inverse(Q_t)) @ hist_t
+    # print(matched.shape)
+    matched = matched.T.reshape(npx, nc) + mu_s
+    # print(matched.shape)
+
+    matched = matched.clamp(0, 1)
+
+    return matched
+
+
 def colour_transfer_mkl(x0, x1, eps=1e-2):
     """From https://github.com/ptallada/colour_transfer/blob/master/colour_transfer.py#L10"""
     a = torch.cov(x0.T)
@@ -106,7 +143,7 @@ def hist_match(target, source):
     source = source.T.cpu().numpy()
 
     nc, npx = target.shape
-    bins = 64
+    bins = 128
 
     for j in range(nc):
         lo = min(target[j].min(), source[j].min())
@@ -127,40 +164,3 @@ def hist_match(target, source):
 
     matched = matched.clamp(min(target.min(), source.min()), max(target.max(), source.max()))
     return matched.T
-
-
-def pca_match(target, source, eps=1e-2):
-    """From https://github.com/ProGamerGov/Neural-Tools/blob/master/linear-color-transfer.py#L36"""
-    npx, nc = target.shape
-    # print(target.shape, source.shape)
-
-    mu_t = target.mean(0)
-    hist_t = (target - mu_t).T
-    # print(hist_t.shape)
-    cov_t = hist_t @ hist_t.T / npx + eps * torch.eye(nc, device=device)
-    # print(cov_t.shape)
-
-    eigval_t, eigvec_t = torch.symeig(cov_t, eigenvectors=True, upper=True)
-    E_t = torch.sqrt(torch.diagflat(eigval_t))
-    E_t[E_t != E_t] = 0  # Convert nan to 0
-    Q_t = (eigvec_t @ E_t) @ eigvec_t.T
-    # print(Q_t.shape)
-
-    mu_s = source.mean(0)
-    # print(mu_s.shape)
-    hist_s = (source - mu_s).T
-    cov_s = hist_s @ hist_s.T / npx + eps * torch.eye(nc, device=device)
-
-    eigval_s, eigvec_s = torch.symeig(cov_s, eigenvectors=True, upper=True)
-    E_s = torch.sqrt(torch.diagflat(eigval_s))
-    E_s[E_s != E_s] = 0
-    Q_s = (eigvec_s @ E_s) @ eigvec_s.T
-
-    matched = (Q_s @ torch.inverse(Q_t)) @ hist_t
-    # print(matched.shape)
-    matched = matched.T.reshape(npx, nc) + mu_s
-    # print(matched.shape)
-
-    matched = matched.clamp(0, 1)
-
-    return matched

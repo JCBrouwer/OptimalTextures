@@ -2,8 +2,6 @@ import sys
 
 import torch
 import torchvision
-from PIL import Image
-from torchinterp1d import Interp1d
 from tqdm import tqdm
 
 import util
@@ -12,7 +10,6 @@ from vgg import Decoder, Encoder
 
 torch.set_grad_enabled(False)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-interp = Interp1d()
 
 
 def random_rotation(N):
@@ -36,12 +33,9 @@ def random_rotation(N):
     return H
 
 
-import matplotlib.pyplot as plt
-
 if __name__ == "__main__":
     style = util.load_image(sys.argv[1])
-    output = util.load_image(sys.argv[2])
-    # output = torch.rand(style.shape, device=device)
+    output = torch.rand(style.shape, device=device)
 
     style_layers = [None]  # add one to index so it works better in next loop
     for layer in range(1, 6):
@@ -50,11 +44,11 @@ if __name__ == "__main__":
             style_layers.append(enc_s.reshape(-1, enc_s.shape[2]))  # [pixels, channels]
 
     # multiple resolutions (e.g. each pass can be done for a new resolution ?)
-    num_passes = 1
+    num_passes = 5
     pbar = tqdm(total=64 + 128 + 256 + 512 + 512, smoothing=1)
     for _ in range(num_passes):
         # PCA goes here
-        for layer in range(1, 6):
+        for layer in range(5, 0, -1):
             with Encoder(layer).to(device) as encoder:
                 output_layer = encoder(output).squeeze().permute(1, 2, 0)
                 h, w, c = output_layer.shape
@@ -63,32 +57,16 @@ if __name__ == "__main__":
             for it in range(int(c / num_passes)):
                 rotation = random_rotation(c)
 
-                # print(output_layer.min(), output_layer.mean(), output_layer.max())
-                # print(style_layers[layer].min(), style_layers[layer].mean(), style_layers[layer].max())
-
                 proj_s = style_layers[layer] @ rotation
-                # print(proj_s.min(), proj_s.mean(), proj_s.max())
                 proj_o = output_layer @ rotation
-                # print(proj_o.min(), proj_o.mean(), proj_o.max())
 
-                match_o = cdf_match(proj_o, proj_s)
-                # print(match_o.min(), match_o.mean(), match_o.max())
+                match_o = hist_match(proj_o, proj_s)
 
                 output_layer = match_o @ rotation.T
-                # print(output_layer.min(), output_layer.mean(), output_layer.max())
 
-                # with Decoder(layer).to(device) as decoder:
-                #     plt.figure()
-                #     out = decoder(output_layer.T.reshape(1, c, h, w).clamp(0, output_layer.max()))
-                #     # print(out.min(), out.mean(), out.max())
-                #     plt.imshow(out.cpu().numpy().squeeze().transpose(1, 2, 0))
-                #     plt.show(block=False)
-
-                # print()
                 pbar.update(1)
 
             with Decoder(layer).to(device) as decoder:
                 output = decoder(output_layer.T.reshape(1, c, h, w))
 
     torchvision.utils.save_image(torch.cat((style, output)), "output/texture.png")
-    plt.show()
