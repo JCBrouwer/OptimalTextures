@@ -1,6 +1,9 @@
 import numpy as np
 import torch
 from PIL import Image
+from torchinterp1d import Interp1d
+
+interp1d = Interp1d()
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -137,7 +140,7 @@ def cdf_match(target, source):
     return matched.T
 
 
-def hist_match(target, source):
+def hist_match_np(target, source):
     matched = torch.empty_like(target.T, device=device)
     target = target.T.cpu().numpy()
     source = source.T.cpu().numpy()
@@ -149,18 +152,114 @@ def hist_match(target, source):
         lo = min(target[j].min(), source[j].min())
         hi = max(target[j].max(), source[j].max())
 
-        p0r, edges = np.histogram(target[j], bins=bins, range=[lo, hi])
-        p1r, _ = np.histogram(source[j], bins=bins, range=[lo, hi])
+        target_hist, bin_edges = np.histogram(target[j], bins=bins, range=[lo, hi])
+        source_hist, _ = np.histogram(source[j], bins=bins, range=[lo, hi])
 
-        cp0r = p0r.cumsum().astype(np.float32)
-        cp0r /= cp0r[-1]
+        target_cdf = target_hist.cumsum().astype(np.float32)
+        target_cdf /= target_cdf[-1]
 
-        cp1r = p1r.cumsum().astype(np.float32)
-        cp1r /= cp1r[-1]
+        source_cdf = source_hist.cumsum().astype(np.float32)
+        source_cdf /= source_cdf[-1]
 
-        f = np.interp(cp0r, cp1r, edges[1:])
+        remapped_cdf = np.interp(target_cdf, source_cdf, bin_edges[1:])
 
-        matched[j] = torch.from_numpy(np.interp(target[j], edges[1:], f, left=0, right=bins)).to(device)
+        matched[j] = torch.from_numpy(np.interp(target[j], bin_edges[1:], remapped_cdf, left=0, right=bins)).to(device)
 
-    matched = matched.clamp(min(target.min(), source.min()), max(target.max(), source.max()))
     return matched.T
+
+
+def hist_match(target, source, bins=128):
+    target = target.T
+    source = source.T
+    matched = torch.empty_like(target, device=device)
+    for j in range(len(target)):
+        lo = torch.min(target[j].min(), source[j].min())
+        hi = torch.max(target[j].max(), source[j].max())
+
+        target_hist = torch.histc(target[j], bins, lo, hi)
+        source_hist = torch.histc(source[j], bins, lo, hi)
+
+        target_cdf = target_hist.cumsum(0)
+        target_cdf = target_cdf / target_cdf[-1]
+
+        source_cdf = source_hist.cumsum(0)
+        source_cdf = source_cdf / source_cdf[-1]
+
+        bin_edges = torch.linspace(lo, hi, bins + 1, device=device)
+
+        remapped_cdf = interp1d(source_cdf, bin_edges[1:], target_cdf).squeeze()
+        # ^^^ first positions of this have -1000 values all of a sudden?!
+
+        matched[j] = interp1d(bin_edges[1:], remapped_cdf, target[j])
+
+    return matched.T
+
+
+if __name__ == "__main__":
+    import numpy as np
+    import torch
+    from torchinterp1d import Interp1d
+
+    interp1d = Interp1d()
+
+    # histogram matching with numpy
+
+    random_state = np.random.RandomState(12345)
+
+    bins = 64
+
+    target = random_state.normal(size=(128 * 128)) * 2
+    source = random_state.normal(size=(128 * 128)) * 2
+    matched = np.empty_like(target)
+
+    lo = min(target.min(), source.min())
+    hi = max(target.max(), source.max())
+
+    target_hist_np, bin_edges_np = np.histogram(target, bins=bins, range=[lo, hi])
+    source_hist_np, _ = np.histogram(source, bins=bins, range=[lo, hi])
+
+    target_cdf_np = target_hist_np.cumsum()
+    target_cdf_np = target_cdf_np / target_cdf_np[-1]
+
+    source_cdf_np = source_hist_np.cumsum()
+    source_cdf_np = source_cdf_np / source_cdf_np[-1]
+
+    remapped_cdf_np = np.interp(target_cdf_np, source_cdf_np, bin_edges_np[1:])
+
+    matched_np = np.interp(target, bin_edges_np[1:], remapped_cdf_np, left=0, right=bins)
+
+    # now with pytorch
+
+    target = torch.from_numpy(target)
+    source = torch.from_numpy(source)
+
+    target_hist = torch.histc(target, bins, lo, hi)
+    source_hist = torch.histc(source, bins, lo, hi)
+
+    assert np.allclose(target_hist_np, target_hist.numpy())
+    assert np.allclose(source_hist_np, source_hist.numpy())
+
+    target_cdf = target_hist.cumsum(0)
+    target_cdf = target_cdf / target_cdf[-1]
+
+    assert np.allclose(target_cdf_np, target_cdf.numpy())
+
+    source_cdf = source_hist.cumsum(0)
+    source_cdf = source_cdf / source_cdf[-1]
+
+    assert np.allclose(source_cdf_np, source_cdf.numpy())
+
+    bin_edges = torch.linspace(lo, hi, bins + 1)
+
+    assert np.allclose(bin_edges_np, bin_edges.numpy())
+
+    remapped_cdf = interp1d(source_cdf, bin_edges[1:], target_cdf).squeeze()
+    # ^^^ first positions of this have -100 values all of a sudden?!
+
+    print(remapped_cdf_np)
+    print(remapped_cdf.numpy())
+    assert np.allclose(remapped_cdf_np, remapped_cdf.numpy())  # fails
+
+    matched = interp1d(bin_edges[1:], remapped_cdf, target)
+
+    assert np.allclose(matched_np, matched.numpy())
