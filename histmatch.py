@@ -15,95 +15,104 @@ def swap_color_channel(target, source, colorspace="HSV"):  # YCbCr also works
     return Image.merge(colorspace, target_channels).convert("RGB")
 
 
-def old_pca_match(target, source, eps=1e-2):
+def hist_match(target, source, mode="chol", eps=1e-2):
     """From https://github.com/ProGamerGov/Neural-Tools/blob/master/linear-color-transfer.py#L36"""
+
+    # if mode == "cdf":
+    #     return cdf_match_np(target, source)
+    # if mode == "mkl":
+    #     return mkl_match(target, source)
 
     mu_t = target.mean((2, 3), keepdim=True)
     hist_t = (target - mu_t).view(target.size(1), -1)  # [c, b * h * w]
     cov_t = hist_t @ hist_t.T / hist_t.shape[1] + eps * torch.eye(hist_t.shape[0], device=device)
 
-    eigval_t, eigvec_t = torch.symeig(cov_t, eigenvectors=True, upper=True)
-    E_t = torch.sqrt(torch.diagflat(eigval_t))
-    E_t[E_t != E_t] = 0  # Convert nan to 0
-    Q_t = (eigvec_t @ E_t) @ eigvec_t.T
-
     mu_s = source.mean((2, 3), keepdim=True)
     hist_s = (source - mu_s).view(source.size(1), -1)
     cov_s = hist_s @ hist_s.T / hist_s.shape[1] + eps * torch.eye(hist_s.shape[0], device=device)
 
-    eigval_s, eigvec_s = torch.symeig(cov_s, eigenvectors=True, upper=True)
-    E_s = torch.sqrt(torch.diagflat(eigval_s))
-    E_s[E_s != E_s] = 0
-    Q_s = (eigvec_s @ E_s) @ eigvec_s.T
+    if mode == "chol":
+        chol_t = torch.linalg.cholesky(cov_t)
+        chol_s = torch.linalg.cholesky(cov_s)
+        matched = chol_s @ torch.inverse(chol_t) @ hist_t
 
-    matched = (Q_s @ torch.inverse(Q_t)) @ hist_t
+    elif mode == "pca":
+        eva_t, eve_t = torch.symeig(cov_t, eigenvectors=True, upper=True)
+        Qt = eve_t @ torch.sqrt(torch.diag(eva_t)) @ eve_t.T
+        eva_s, eve_s = torch.symeig(cov_s, eigenvectors=True, upper=True)
+        Qs = eve_s @ torch.sqrt(torch.diag(eva_s)) @ eve_s.T
+        matched = Qs @ torch.inverse(Qt) @ hist_t
+
+    elif mode == "sym":
+        eva_t, eve_t = torch.symeig(cov_t, eigenvectors=True, upper=True)
+        Qt = eve_t @ torch.sqrt(torch.diag(eva_t)) @ eve_t.T
+        Qt_Cs_Qt = Qt @ cov_s @ Qt
+        eva_QtCsQt, eve_QtCsQt = torch.symeig(Qt_Cs_Qt, eigenvectors=True, upper=True)
+        QtCsQt = eve_QtCsQt @ torch.sqrt(torch.diag(eva_QtCsQt)) @ eve_QtCsQt.T
+        matched = torch.inverse(Qt) @ QtCsQt @ torch.inverse(Qt) @ hist_t
+
     matched = matched.view(*target.shape) + mu_s
-    matched = matched.clamp(0, 1)
 
     return matched
 
 
-def pca_match(target, source, eps=1e-2):
-    """From https://github.com/ProGamerGov/Neural-Tools/blob/master/linear-color-transfer.py#L36"""
-    npx, nc = target.shape
-    # print(target.shape, source.shape)
-
-    mu_t = target.mean(0)
-    hist_t = (target - mu_t).T
-    # print(hist_t.shape)
-    cov_t = hist_t @ hist_t.T / npx + eps * torch.eye(nc, device=device)
-    # print(cov_t.shape)
-
-    eigval_t, eigvec_t = torch.symeig(cov_t, eigenvectors=True, upper=True)
-    E_t = torch.sqrt(torch.diagflat(eigval_t))
-    E_t[E_t != E_t] = 0  # Convert nan to 0
-    Q_t = (eigvec_t @ E_t) @ eigvec_t.T
-    # print(Q_t.shape)
-
-    mu_s = source.mean(0)
-    # print(mu_s.shape)
-    hist_s = (source - mu_s).T
-    cov_s = hist_s @ hist_s.T / npx + eps * torch.eye(nc, device=device)
-
-    eigval_s, eigvec_s = torch.symeig(cov_s, eigenvectors=True, upper=True)
-    E_s = torch.sqrt(torch.diagflat(eigval_s))
-    E_s[E_s != E_s] = 0
-    Q_s = (eigvec_s @ E_s) @ eigvec_s.T
-
-    matched = (Q_s @ torch.inverse(Q_t)) @ hist_t
-    # print(matched.shape)
-    matched = matched.T.reshape(npx, nc) + mu_s
-    # print(matched.shape)
-
-    matched = matched.clamp(0, 1)
-
-    return matched
+#### vvv        hist match graveyard        vvv
 
 
-def colour_transfer_mkl(x0, x1, eps=1e-2):
+def cdf_match_np(target, source, bins=128):
+    target = target.squeeze().permute(1, 2, 0)
+    shape = target.shape
+    target = target.reshape(-1, target.shape[1]).T.cpu().numpy()
+
+    source = source.squeeze().permute(1, 2, 0).reshape(-1, target.shape[0]).T.cpu().numpy()
+
+    matched = np.empty_like(target)
+
+    for j in range(target.shape[0]):
+        lo = min(target[j].min(), source[j].min())
+        hi = max(target[j].max(), source[j].max())
+
+        target_hist, bin_edges = np.histogram(target[j], bins=bins, range=[lo, hi])
+        source_hist, _ = np.histogram(source[j], bins=bins, range=[lo, hi])
+
+        target_cdf = target_hist.cumsum().astype(np.float32)
+        target_cdf /= target_cdf[-1]
+
+        source_cdf = source_hist.cumsum().astype(np.float32)
+        source_cdf /= source_cdf[-1]
+
+        remapped_cdf = np.interp(target_cdf, source_cdf, bin_edges[1:])
+
+        matched[j] = np.interp(target[j], bin_edges[1:], remapped_cdf, left=0, right=bins)
+
+    return torch.from_numpy(matched.T.reshape(1, *reversed(shape))).to(device)
+
+
+def mkl_match(target, source, eps=1e-2):
     """From https://github.com/ptallada/colour_transfer/blob/master/colour_transfer.py#L10"""
-    a = torch.cov(x0.T)
-    b = torch.cov(x1.T)
 
-    Da2, Ua = torch.linalg.eig(a)
-    Da = torch.diag(torch.sqrt(Da2.clip(eps, None)))
+    cov_t = target.T @ target / target.shape[1]
+    cov_s = source.T @ source / source.shape[1]
 
-    C = torch.dot(torch.dot(torch.dot(torch.dot(Da, Ua.T), b), Ua), Da)
+    eva_t, eve_t = torch.linalg.eig(cov_t)
+    eva_t = torch.diag(torch.sqrt(eva_t.clip(eps, None)))
 
-    Dc2, Uc = torch.linalg.eig(C)
-    Dc = torch.diag(torch.sqrt(Dc2.clip(eps, None)))
+    C = eva_t @ eve_t.T @ cov_s @ eve_t @ eva_t
 
-    Da_inv = torch.diag(1.0 / (torch.diag(Da)))
+    eva_c, eve_c = torch.linalg.eig(C)
+    eva_c = torch.diag(torch.sqrt(eva_c.clip(eps, None)))
 
-    t = torch.dot(torch.dot(torch.dot(torch.dot(torch.dot(torch.dot(Ua, Da_inv), Uc), Dc), Uc.T), Da_inv), Ua.T)
+    eva_t_inv = torch.diag(1.0 / (torch.diag(eva_t)))
 
-    mx0 = torch.mean(x0, axis=0)
-    mx1 = torch.mean(x1, axis=0)
+    t = eve_t @ eva_t_inv @ eve_c @ eva_c @ eve_c.T @ eva_t_inv @ eve_t.T
 
-    return torch.dot(x0 - mx0, t) + mx1
+    mu_t = torch.mean(target, axis=0)
+    mu_s = torch.mean(source, axis=0)
+
+    return (target - mu_t) @ t + mu_s
 
 
-def cdf_match(target, source):
+def cdf_match_vec(target, source):
     """
     Expects two flattened tensors of shape (pixels, channels)
 
@@ -140,35 +149,7 @@ def cdf_match(target, source):
     return matched.T
 
 
-def hist_match_np(target, source):
-    matched = torch.empty_like(target.T, device=device)
-    target = target.T.cpu().numpy()
-    source = source.T.cpu().numpy()
-
-    nc, npx = target.shape
-    bins = 128
-
-    for j in range(nc):
-        lo = min(target[j].min(), source[j].min())
-        hi = max(target[j].max(), source[j].max())
-
-        target_hist, bin_edges = np.histogram(target[j], bins=bins, range=[lo, hi])
-        source_hist, _ = np.histogram(source[j], bins=bins, range=[lo, hi])
-
-        target_cdf = target_hist.cumsum().astype(np.float32)
-        target_cdf /= target_cdf[-1]
-
-        source_cdf = source_hist.cumsum().astype(np.float32)
-        source_cdf /= source_cdf[-1]
-
-        remapped_cdf = np.interp(target_cdf, source_cdf, bin_edges[1:])
-
-        matched[j] = torch.from_numpy(np.interp(target[j], bin_edges[1:], remapped_cdf, left=0, right=bins)).to(device)
-
-    return matched.T
-
-
-def hist_match(target, source, bins=128):
+def cdf_match_pth(target, source, bins=128):
     target = target.T
     source = source.T
     matched = torch.empty_like(target, device=device)
@@ -187,8 +168,13 @@ def hist_match(target, source, bins=128):
 
         bin_edges = torch.linspace(lo, hi, bins + 1, device=device)
 
-        remapped_cdf = interp1d(source_cdf, bin_edges[1:], target_cdf).squeeze()
-        # ^^^ first positions of this have -1000 values all of a sudden?!
+        remapped_cdf = interp1d(source_cdf, bin_edges[:-1], target_cdf).squeeze()
+        # ^^^ first positions of this have values of -1000 all of a sudden?!
+
+        # derp fix
+        orders_of_magnitude = torch.sign(remapped_cdf) * torch.log10(torch.abs(remapped_cdf))
+        broken = orders_of_magnitude < -2
+        remapped_cdf[broken] = remapped_cdf[torch.min(broken, 0)[1]].clone()
 
         matched[j] = interp1d(bin_edges[1:], remapped_cdf, target[j])
 

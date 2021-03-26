@@ -10,6 +10,53 @@ from vgg import Decoder, Encoder
 
 if __name__ == "__main__":
 
+    # histogram matching
+
+    def plot_hists(imgs):
+        _, ax = plt.subplots(2, 3, figsize=(16, 9))
+        for i, img in enumerate(imgs):
+            ax[0, i].hist(img[:, :, 0].cpu().numpy().ravel(), bins=128, color="r", alpha=0.333)
+            ax[0, i].hist(img[:, :, 1].cpu().numpy().ravel(), bins=128, color="g", alpha=0.333)
+            ax[0, i].hist(img[:, :, 2].cpu().numpy().ravel(), bins=128, color="b", alpha=0.333)
+            ax[1, i].imshow(img.squeeze().permute(1, 2, 0).cpu().numpy())
+        plt.tight_layout()
+        plt.show(block=False)
+
+    content = util.load_image("content/rocket.jpg")
+    style = util.load_image("style/candy.jpg")
+
+    num_repeats = 100
+
+    t = time.time()
+    for _ in range(num_repeats):
+        matched = hist_match(content, style, mode="chol").reshape(content.shape)
+    print("chol", (time.time() - t) / num_repeats)
+    plot_hists((content, style, matched))
+
+    t = time.time()
+    for _ in range(num_repeats):
+        matched = hist_match(content, style, mode="pca").reshape(content.shape)
+    print("pca", (time.time() - t) / num_repeats)
+    plot_hists((content, style, matched))
+
+    t = time.time()
+    for _ in range(num_repeats):
+        matched = hist_match(content, style, mode="sym").reshape(content.shape)
+    print("sym", (time.time() - t) / num_repeats)
+    plot_hists((content, style, matched))
+
+    t = time.time()
+    for _ in range(num_repeats):
+        matched = hist_match(content, style, mode="cdf").reshape(content.shape)
+    print("cdf", (time.time() - t) / num_repeats)
+    plot_hists((content, style, matched))
+
+    # rotations
+    mat = torch.randn(16, 16, device=device)
+    rot = random_rotation(16)
+    assert rot.det().allclose(torch.tensor(1.0))
+    assert (rot.T).allclose(torch.inverse(rot), rtol=5e-3)  # relative tolerance 50x higher than default
+
     # encode decode uniform noise
     fig, ax = plt.subplots(2, 5, figsize=(16, 9))
     og_style = util.load_image("style/graffiti256.jpg")
@@ -60,7 +107,13 @@ if __name__ == "__main__":
                 rotation = random_rotation(c)
                 proj_s = style_layer @ rotation
                 proj_o = output_layer @ rotation
-                match_o = hist_match(proj_o, proj_s)
+                match_o = flatten(
+                    hist_match(
+                        spatial(proj_o, (h, w, c)),
+                        spatial(proj_s, (h, w, c)),
+                        mode=args.hist_mode,
+                    )
+                )
                 output_layer = match_o @ rotation.T
             output = decoder(output_layer.T.reshape(1, c, h, w))
             ax[1, layer - 1].imshow(output.clamp(0, 1).squeeze().permute(1, 2, 0).cpu().numpy())
@@ -68,47 +121,6 @@ if __name__ == "__main__":
     plt.tight_layout()
     plt.suptitle("Encode, three iters of hist match, and decode")
     plt.show(block=False)
-
-    # rotations
-    mat = torch.randn(16, 16, device=device)
-    rot = random_rotation(16)
-    assert rot.det().allclose(torch.tensor(1.0))
-    assert (rot.T).allclose(torch.inverse(rot), rtol=5e-3)  # relative tolerance 50x higher than default
-
-    # histogram matching
-
-    def plot_hists(imgs):
-        _, ax = plt.subplots(2, 3, figsize=(16, 9))
-        for i, img in enumerate(imgs):
-            ax[0, i].hist(img[:, :, 0].cpu().numpy().ravel(), bins=128, color="r", alpha=0.333)
-            ax[0, i].hist(img[:, :, 1].cpu().numpy().ravel(), bins=128, color="g", alpha=0.333)
-            ax[0, i].hist(img[:, :, 2].cpu().numpy().ravel(), bins=128, color="b", alpha=0.333)
-            ax[1, i].imshow(img.squeeze().permute(1, 2, 0).cpu().numpy())
-        plt.tight_layout()
-        plt.show(block=False)
-
-    content = util.load_image("content/rocket.jpg")
-    style = util.load_image("style/candy.jpg")
-
-    num_repeats = 100
-
-    t = time.time()
-    for _ in range(num_repeats):
-        matched = cdf_match(content.reshape(-1, 3), style.reshape(-1, 3)).reshape(content.shape)
-    print("cdf", (time.time() - t) / num_repeats)
-    plot_hists((content, style, matched))
-
-    t = time.time()
-    for _ in range(num_repeats):
-        matched = pca_match(content.T.reshape(-1, 3), style.T.reshape(-1, 3)).T.reshape(content.shape)
-    print("pca", (time.time() - t) / num_repeats)
-    plot_hists((content, style, matched))
-
-    t = time.time()
-    for _ in range(num_repeats):
-        matched = hist_match(content.reshape(-1, 3), style.reshape(-1, 3)).reshape(content.shape)
-    print("np cdf", (time.time() - t) / num_repeats)
-    plot_hists((content, style, matched))
 
     # color channel transfer
     plt.figure()
