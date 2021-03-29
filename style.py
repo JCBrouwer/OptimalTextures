@@ -1,8 +1,6 @@
 import argparse
-import sys
 
 import torch
-import torchvision
 from tqdm import tqdm
 
 import util
@@ -35,26 +33,17 @@ def random_rotation(N):
     return H
 
 
-def spatial(tensor, shape):
-    return tensor.T.reshape(1, tensor.shape[1], *shape[:2])
-
-
-def flatten(tensor):
-    return tensor.squeeze().permute(1, 2, 0).reshape(-1, tensor.shape[1])
-
-
-def encode(tensor, layer, eigvecs):
-    with Encoder(layer).to(device) as encoder:
-        features = encoder(tensor).squeeze().permute(1, 2, 0)  # remove batch channel and move channels to last axis
-        spatial_shape = features.shape
-        features = features.reshape(-1, features.shape[2])  # [pixels, channels]
+def encode(tensor, l, eigvecs):
+    with Encoder(l).to(device) as encoder:
+        features = encoder(tensor).permute(0, 2, 3, 1)  # [b, h, w, c]
 
         if not args.no_pca:
             if eigvecs is None:
+                flat_feat = features.reshape(-1, features.shape[-1])
                 if args.covariance:
-                    A = (features - features.mean()).T @ (features - features.mean()) / features.shape[1]
+                    A = (flat_feat - flat_feat.mean()).T @ (flat_feat - flat_feat.mean()) / flat_feat.shape[1]
                 else:
-                    A = features - features.mean()
+                    A = flat_feat - flat_feat.mean()
                 _, eigvals, eigvecs = torch.svd(A)
                 total = torch.sum(eigvals)
                 k = np.argmax(np.cumsum([(i / total) for i in eigvals]) > 0.9)
@@ -62,45 +51,54 @@ def encode(tensor, layer, eigvecs):
 
             features = features @ eigvecs
 
-        return features, eigvecs, spatial_shape
+        return features, eigvecs
 
 
 def encode_inputs(style, content):
-    style_layers, style_shapes, style_eigvs, content_layers = [None], [None], [None], [None]
-    for layer in range(1, 6):
-        style_layer, eigvecs, style_shape = encode(style, layer, None)
+    style_layers, style_eigvs, content_layers = [None], [None], [None]
+    for l in range(1, 6):
+        style_layer, eigvecs = encode(style, l, eigvecs=None)
 
         style_layers.append(style_layer)
-        style_shapes.append(style_shape)
         style_eigvs.append(eigvecs)
 
         if content is not None:
-            content_layer, _, _ = encode(content, layer, eigvecs)
+            content_layer, _ = encode(content, l, eigvecs)
             content_layer -= content_layer.mean()
             content_layer += style_layer.mean()
             content_layers.append(content_layer)
 
-    return style_layers, style_shapes, style_eigvs, content_layers
+    return style_layers, style_eigvs, content_layers
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("-s", "--style", type=str, default="style/graffiti.jpg")
     parser.add_argument("-c", "--content", type=str, default=None)
-    parser.add_argument("--size", type=int, default=1024)
-    parser.add_argument("--content_strength", type=float, default=0.125)
-    parser.add_argument("--hist_mode", type=str, choices=["sym", "pca", "chol"], default="chol")
+    parser.add_argument("--size", type=int, default=512)
+    parser.add_argument("--content_strength", type=float, default=0.005)
+    parser.add_argument("--hist_mode", type=str, choices=["sym", "pca", "chol", "cdf"], default="chol")
     parser.add_argument("--no_pca", action="store_true")
     parser.add_argument("--no_multires", action="store_true")
     parser.add_argument("--covariance", action="store_true")
-    parser.add_argument("--num_passes", type=int, default=5)
+    parser.add_argument("--passes", type=int, default=5)
+    parser.add_argument("--iters", type=int, default=1500)
     args = parser.parse_args()
+
+    iters_per_pass = np.ones(args.passes) * int(args.iters / args.passes)
+    proportion_per_layer = np.array([64, 128, 256, 512, 512])
+    proportion_per_layer = proportion_per_layer / np.sum(proportion_per_layer)
 
     sizes = [args.size]
     if not args.no_multires:
-        sizes = np.linspace(256, args.size, args.num_passes)
+        sizes = np.linspace(256, args.size, args.passes)
         sizes = [int(size + 32 - 1) & -32 for size in sizes]
         # round to nearest multiple of 32, so that even after 4 max pools the resolution is an even number
+
+        iters_per_pass = np.arange(2 * args.passes, args.passes, -1)
+        iters_per_pass = iters_per_pass / np.sum(iters_per_pass) * args.iters
+
+    iters = (iters_per_pass[:, None] * proportion_per_layer[None, :]).astype(np.int32)
 
     style = util.load_image(args.style, size=sizes[0])
 
@@ -111,62 +109,49 @@ if __name__ == "__main__":
 
     output = torch.rand((1, 3, sizes[0], sizes[0]), device=device)
 
-    style_layers, style_shapes, style_eigvs, content_layers = encode_inputs(style, content)
+    style_layers, style_eigvs, content_layers = encode_inputs(style, content)
 
-    pbar = tqdm(total=64 + 128 + 256 + 512 + 512, smoothing=1)
-    for i in range(args.num_passes):
+    pbar = tqdm(total=args.iters, smoothing=1)
+    for p in range(args.passes):
 
-        if i != 0 and not args.no_multires:
+        if p != 0 and not args.no_multires:
             output = torch.nn.functional.interpolate(
-                output, size=(sizes[i], sizes[i]), mode="bicubic", align_corners=False
+                output, size=(sizes[p], sizes[p]), mode="bicubic", align_corners=False
             )
 
-            style = util.load_image(args.style, size=sizes[i])
+            style = util.load_image(args.style, size=sizes[p])
             if content is not None:
-                content = util.load_image(args.content, size=sizes[i])
+                content = util.load_image(args.content, size=sizes[p])
 
-            style_layers, style_shapes, style_eigvs, content_layers = encode_inputs(style, content)
+            style_layers, style_eigvs, content_layers = encode_inputs(style, content)
 
-        for layer in range(5, 0, -1):
-            output_layer, _, shape = encode(output, layer, style_eigvs[layer])
+        for l in range(5, 0, -1):
+            output_layer, _ = encode(output, l, style_eigvs[l])
 
-            for it in range(int(shape[-1] / args.num_passes)):
-                rotation = random_rotation(output_layer.shape[1])
+            for _ in range(iters[p, l - 1]):
+                rotation = random_rotation(output_layer.shape[-1])
 
-                proj_s = style_layers[layer] @ rotation
+                proj_s = style_layers[l] @ rotation
                 proj_o = output_layer @ rotation
 
-                match_o = flatten(
-                    hist_match(
-                        spatial(proj_o, shape),
-                        spatial(proj_s, style_shapes[layer]),
-                        mode=args.hist_mode,
-                    )
-                )
+                match_o = hist_match(proj_o, proj_s, mode=args.hist_mode)
+
                 output_layer = match_o @ rotation.T
 
-                if content is not None and layer >= 3:
+                if content is not None and l >= 3:
                     strength = args.content_strength
-                    if layer == 4:
+                    if l == 4:
                         strength /= 2
-                    elif layer == 3:
+                    elif l == 3:
                         strength /= 4
-                    output_layer += strength * (content_layers[layer] - output_layer)
+                    output_layer += strength * (content_layers[l] - output_layer)
 
                 pbar.update(1)
 
             if not args.no_pca:
-                output_layer = output_layer @ style_eigvs[layer].T
+                output_layer = output_layer @ style_eigvs[l].T
 
-            with Decoder(layer).to(device) as decoder:
-                output = decoder(spatial(output_layer, shape))
+            with Decoder(l).to(device) as decoder:
+                output = decoder(output_layer.permute(0, 3, 1, 2))
 
-    outname = name(args.style)
-    if content is not None:
-        outname += name(args.content) + "_" + str(args.content_strength)
-    outname += "_" + args.hist_mode
-    if not args.no_pca:
-        outname += "_pca"
-    if not args.no_multires:
-        outname += "_multires"
-    torchvision.utils.save_image(output, f"output/{outname}.png")
+    util.save_image(output, args)

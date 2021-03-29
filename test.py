@@ -25,7 +25,13 @@ if __name__ == "__main__":
     content = util.load_image("content/rocket.jpg")
     style = util.load_image("style/candy.jpg")
 
-    num_repeats = 100
+    num_repeats = 1000
+
+    t = time.time()
+    for _ in range(num_repeats):
+        matched = hist_match(content, style, mode="cdf").reshape(content.shape)
+    print("cdf", (time.time() - t) / num_repeats)
+    plot_hists((content, style, matched))
 
     t = time.time()
     for _ in range(num_repeats):
@@ -43,12 +49,6 @@ if __name__ == "__main__":
     for _ in range(num_repeats):
         matched = hist_match(content, style, mode="sym").reshape(content.shape)
     print("sym", (time.time() - t) / num_repeats)
-    plot_hists((content, style, matched))
-
-    t = time.time()
-    for _ in range(num_repeats):
-        matched = hist_match(content, style, mode="cdf").reshape(content.shape)
-    print("cdf", (time.time() - t) / num_repeats)
     plot_hists((content, style, matched))
 
     # rotations
@@ -107,13 +107,7 @@ if __name__ == "__main__":
                 rotation = random_rotation(c)
                 proj_s = style_layer @ rotation
                 proj_o = output_layer @ rotation
-                match_o = flatten(
-                    hist_match(
-                        spatial(proj_o, (h, w, c)),
-                        spatial(proj_s, (h, w, c)),
-                        mode=args.hist_mode,
-                    )
-                )
+                match_o = flatten(hist_match(spatial(proj_o, (h, w, c)), spatial(proj_s, (h, w, c))))
                 output_layer = match_o @ rotation.T
             output = decoder(output_layer.T.reshape(1, c, h, w))
             ax[1, layer - 1].imshow(output.clamp(0, 1).squeeze().permute(1, 2, 0).cpu().numpy())
