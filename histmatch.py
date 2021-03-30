@@ -13,8 +13,7 @@ def swap_color_channel(target, source, colorspace="HSV"):  # YCbCr also works
 
 
 def hist_match(target, source, mode="chol", eps=1e-2):
-    """From https://github.com/ProGamerGov/Neural-Tools/blob/master/linear-color-transfer.py#L36"""
-    target = target.permute(0, 3, 1, 2)
+    target = target.permute(0, 3, 1, 2)  # -> b, c, h, w
     source = source.permute(0, 3, 1, 2)
 
     if mode == "cdf":
@@ -22,6 +21,8 @@ def hist_match(target, source, mode="chol", eps=1e-2):
         matched = cdf_match(target.reshape(c, -1), source.reshape(c, -1)).reshape(b, c, h, w)
 
     else:
+        # based on https://github.com/ProGamerGov/Neural-Tools/blob/master/linear-color-transfer.py#L36
+
         mu_t = target.mean((2, 3), keepdim=True)
         hist_t = (target - mu_t).view(target.size(1), -1)  # [c, b * h * w]
         cov_t = hist_t @ hist_t.T / hist_t.shape[1] + eps * torch.eye(hist_t.shape[0], device=device)
@@ -52,12 +53,33 @@ def hist_match(target, source, mode="chol", eps=1e-2):
 
         matched = matched.view(*target.shape) + mu_s
 
-    return matched.permute(0, 2, 3, 1)
+    return matched.permute(0, 2, 3, 1)  # -> b, h, w, c
+
+
+def cdf_match(target, source, bins=128):
+    matched = torch.empty_like(target)
+    for i, (target_channel, source_channel) in enumerate(zip(target, source)):
+        lo = torch.min(target_channel.min(), source_channel.min())
+        hi = torch.max(target_channel.max(), source_channel.max())
+
+        target_hist = torch.histc(target_channel, bins, lo, hi)  # TODO find batched method of getting histogram?
+        source_hist = torch.histc(source_channel, bins, lo, hi)
+        bin_edges = torch.linspace(lo, hi, bins + 1, device=device)[1:]
+
+        target_cdf = target_hist.cumsum(0)
+        target_cdf = target_cdf / target_cdf[-1]
+
+        source_cdf = source_hist.cumsum(0)
+        source_cdf = source_cdf / source_cdf[-1]
+
+        remapped_cdf = interp(target_cdf, source_cdf, bin_edges)
+        matched[i] = interp(target_channel, bin_edges, remapped_cdf)
+    return matched
 
 
 def interp(x, xp, fp):
     """
-    from https://github.com/numpy/numpy/blob/main/numpy/core/src/multiarray/compiled_base.c#L489
+    based on https://github.com/numpy/numpy/blob/main/numpy/core/src/multiarray/compiled_base.c#L489
     """
     f = torch.zeros_like(x)
 
@@ -78,24 +100,3 @@ def interp(x, xp, fp):
             f[still_infinite] = fp[idxs[still_infinite]]
 
     return f
-
-
-def cdf_match(target, source, bins=128):
-    matched = torch.empty_like(target)
-    for i, (target_channel, source_channel) in enumerate(zip(target, source)):
-        lo = torch.min(target_channel.min(), source_channel.min())
-        hi = torch.max(target_channel.max(), source_channel.max())
-
-        target_hist = torch.histc(target_channel, bins, lo, hi)
-        source_hist = torch.histc(source_channel, bins, lo, hi)
-        bin_edges = torch.linspace(lo, hi, bins + 1, device=device)[1:]
-
-        target_cdf = target_hist.cumsum(0)
-        target_cdf = target_cdf / target_cdf[-1]
-
-        source_cdf = source_hist.cumsum(0)
-        source_cdf = source_cdf / source_cdf[-1]
-
-        remapped_cdf = interp(target_cdf, source_cdf, bin_edges)
-        matched[i] = interp(target_channel, bin_edges, remapped_cdf)
-    return matched

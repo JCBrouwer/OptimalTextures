@@ -6,6 +6,20 @@ from PIL import Image
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
+def load_styles(style_files, size):
+    styles = []
+    for style_file in style_files:
+        styles.append(load_image(style_file, size))
+    return styles
+
+
+def maybe_load_content(content_file, size):
+    content = None
+    if content_file is not None:
+        content = load_image(content_file, size)
+    return content
+
+
 def load_image(path, size=256):
     img = Image.open(path).convert(mode="RGB")
 
@@ -17,14 +31,19 @@ def load_image(path, size=256):
 
 
 def save_image(output, args):
-    outname = name(args.style)
+    outs = [name(style) for style in args.style]
+    if len(args.style) > 1:
+        outs += ["blend", str(args.mixing_alpha)]
     if args.content is not None:
-        outname += name(args.content) + "_" + str(args.content_strength)
-    outname += "_" + args.hist_mode
-    if not args.no_pca:
-        outname += "_pca"
-    if not args.no_multires:
-        outname += "_multires"
+        outs += [name(args.content), str(args.content_strength)]
+    if args.hist_mode != "chol":
+        outs += [args.hist_mode + "hist"]
+    if args.no_pca:
+        outs += ["no_pca"]
+    if args.no_multires:
+        outs += ["no_multires"]
+    outs += [str(args.size)]
+    outname = "_".join(outs)
     torchvision.utils.save_image(output, f"output/{outname}.png")
 
 

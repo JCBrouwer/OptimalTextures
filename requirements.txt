@@ -1,10 +1,6 @@
 matplotlib
 numpy 
-pandas
 Pillow
-scipy
-seaborn
 torch==1.8.0
-torchinterp1d @ git+https://github.com/aliutkus/torchinterp1d.git@a29661bae59e8b3db6ec272eeaddff256026f383
 torchvision==0.9.0
 tqdm

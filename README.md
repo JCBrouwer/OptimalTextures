@@ -7,24 +7,8 @@ This repository is a WIP.
 
 ```bash
 pip install -r requirements
-python style.py
-```
-
-```
-usage: style.py [-h] [-s STYLE] [-c CONTENT] [--size SIZE]
-                [--content_strength CONTENT_STRENGTH]
-                [--hist_mode {sym,pca,chol}] [--no_pca] [--no_multires]
-                [--covariance] [--num_passes NUM_PASSES]
-
-optional arguments:
-  -h, --help            show this help message and exit
-  -s STYLE, --style STYLE
-  -c CONTENT, --content CONTENT
-  --size SIZE
-  --content_strength CONTENT_STRENGTH
-  --hist_mode {sym,pca,chol}
-  --no_pca
-  --no_multires
-  --covariance
-  --num_passes NUM_PASSES
+python style.py -h
+python style.py -s style/graffiti-small.jpg  # texture synthesis
+python style.py -s style/lava-small.jpg -c content/rocket.jpg   # style transfer
+python style.py -s style/zebra.jpg style/pattern-small.jpg   # texture mixing
 ```

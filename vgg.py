@@ -8,7 +8,7 @@ from itertools import chain
 import torch
 import torch.nn as nn
 
-# lambdas to delay creation of lists until actually needed
+# lambdas to delay creation of modules until actually needed
 vgg_normalized = lambda _: [
     [
         nn.Conv2d(3, 3, (1, 1)),
@@ -150,7 +150,7 @@ class Encoder(nn.Module):
         torch.cuda.empty_cache()
 
     def forward(self, x):
-        return self.model(x)
+        return self.model(x).permute(0, 2, 3, 1)  # -> [b, h, w, c] so that matmuls with PCA and rotations are easier
 
 
 class Decoder(nn.Module):
@@ -170,4 +170,4 @@ class Decoder(nn.Module):
         torch.cuda.empty_cache()
 
     def forward(self, x):
-        return self.model(x)
+        return self.model(x.permute(0, 3, 1, 2))  # -> [b, h, w, c] so that matmuls with PCA and rotations are easier
