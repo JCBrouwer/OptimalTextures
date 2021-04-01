@@ -94,18 +94,17 @@ def optimal_texture(
                 output = decoder(output_layer)  # decode back to image space
 
     if color_transfer is not None:
-        content_hls = rgb_to_hls(content)
-        output_hls = rgb_to_hls(output)
-        target_hls = torch.stack((content_hls[:, 0], output_hls[:, 1], content_hls[:, 2]), dim=1)
+        target_hls = rgb_to_hls(content)
+        target_hls[:, 1] = rgb_to_hls(output)[:, 1]  # swap lightness channel
         target = hls_to_rgb(target_hls)
-        if color_transfer == "lum":
-            output = target
-        else:
-            target = target.permute(0, 2, 3, 1)
-            output = output.permute(0, 2, 3, 1)
-            for _ in range(1):
+
+        if color_transfer == "opt":
+            target, output = target.permute(0, 2, 3, 1), output.permute(0, 2, 3, 1)
+            for _ in range(3):
                 output = optimal_transport(output, target, "cdf")
             output = output.permute(0, 3, 1, 2)
+        else:
+            return target  # return output with hue & sat from content
 
     return output
 
