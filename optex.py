@@ -23,6 +23,7 @@ def optimal_texture(
     size=512,
     content_strength=0.01,
     mixing_alpha=0.5,
+    style_scale=1,
     hist_mode="chol",
     no_pca=False,
     no_multires=False,
@@ -38,9 +39,9 @@ def optimal_texture(
     iters_per_pass_and_layer, sizes = get_iters_and_sizes(size, iters, passes, use_multires)
 
     # load inputs and initialize output image
-    styles = util.load_styles(style, size=sizes[0])
+    styles = util.load_styles(style, size=sizes[0], scale=style_scale)
     content = util.maybe_load_content(content, size=sizes[0])
-    output = torch.rand((1, 3, sizes[0], sizes[0]), device=device)
+    output = torch.rand(content.shape if content is not None else (1, 3, sizes[0], sizes[0]), device=device)
 
     # transform style and content to VGG feature space
     style_layers, style_eigvs, content_layers = encode_inputs(styles, content, use_pca=use_pca)
@@ -53,13 +54,16 @@ def optimal_texture(
     for p in range(passes):
 
         if use_multires and p != 0:
-            # upsample to next size
-            output = upsample(output, size=(sizes[p], sizes[p]))
-
             # reload style and content at the new size
-            styles = util.load_styles(args.style, size=sizes[p])
+            styles = util.load_styles(args.style, size=sizes[p], scale=style_scale)
             content = util.maybe_load_content(args.content, size=sizes[p])
+
+            # upsample to next size
+            output = upsample(output, size=content.shape[2:] if content is not None else (sizes[p], sizes[p]))
+
+            # get style and content target features
             style_layers, style_eigvs, content_layers = encode_inputs(styles, content, use_pca=use_pca)
+
             if texture_mixing:
                 style_layers = mix_style_layers(style_layers, mixing_mask, mixing_alpha, hist_mode)
 
@@ -180,7 +184,7 @@ def get_iters_and_sizes(size, iters, passes, use_multires):
 
         sizes = np.linspace(256, size, passes)
         # round to nearest multiple of 32, so that even after 4 max pools the resolution is an even number
-        sizes = [int(size + 32 - 1) & -32 for size in sizes]
+        sizes = [util.round32(size) for size in sizes]
     else:
         iters_per_pass = np.ones(passes) * int(iters / passes)
         sizes = [size] * passes
@@ -210,6 +214,7 @@ if __name__ == "__main__":
     )
     parser.add_argument("-c", "--content", type=str, default=None)
     parser.add_argument("--size", type=int, default=512)
+    parser.add_argument("--style_scale", type=float, default=1)
     parser.add_argument("--content_strength", type=float, default=0.01)
     parser.add_argument("--mixing_alpha", type=float, default=0.5)
     parser.add_argument("--hist_mode", type=str, choices=["sym", "pca", "chol", "cdf"], default="chol")
