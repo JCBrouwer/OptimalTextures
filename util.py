@@ -42,17 +42,18 @@ def round32(integer):
 def save_image(output, args):
     outs = [name(style) for style in args.style]
     if len(args.style) > 1:
-        outs += ["blend", str(args.mixing_alpha)]
+        outs += ["blend" + str(args.mixing_alpha)]
     if args.content is not None:
-        outs += [name(args.content), "strength", str(args.content_strength)]
-    if args.hist_mode != "cdf":
-        outs += [args.hist_mode + "hist"]
+        outs += [name(args.content), "strength" + str(args.content_strength)]
+    outs += [args.hist_mode + "hist"]
     if args.no_pca:
         outs += ["no_pca"]
     if args.no_multires:
         outs += ["no_multires"]
     if args.style_scale != 1:
-        outs += ["scale", str(args.style_scale)]
+        outs += ["scale" + str(args.style_scale)]
+    if args.color_transfer is not None:
+        outs += [args.color_transfer]
     outs += [str(args.size)]
     outname = "_".join(outs)
     torchvision.utils.save_image(output, f"output/{outname}.png")

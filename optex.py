@@ -8,6 +8,7 @@ from tqdm import tqdm
 import util
 from histmatch import *
 from vgg import Decoder, Encoder
+from kornia.color.hls import rgb_to_hls, hls_to_rgb
 
 downsample = partial(interpolate, mode="nearest")  # for mixing mask
 upsample = partial(interpolate, mode="bicubic", align_corners=False)  # for output
@@ -23,7 +24,8 @@ def optimal_texture(
     content_strength=0.01,
     mixing_alpha=0.5,
     style_scale=1,
-    hist_mode="cdf",
+    hist_mode="pca",
+    color_transfer=None,
     no_pca=False,
     no_multires=False,
     passes=5,
@@ -75,16 +77,8 @@ def optimal_texture(
             if use_pca:
                 output_layer = output_layer @ style_eigvs[l]  # project onto principle components
 
-            # iteratively apply optimal transport (rotate randomly and match histograms)
             for _ in range(iters_per_pass_and_layer[p, l - 1]):
-                rotation = random_rotation(output_layer.shape[-1])
-
-                rotated_output = output_layer @ rotation
-                rotated_style = style_layers[l] @ rotation
-
-                matched_output = hist_match(rotated_output, rotated_style, mode=hist_mode)
-
-                output_layer = matched_output @ rotation.T  # rotate back to normal
+                output_layer = optimal_transport(output_layer, style_layers[l], hist_mode)
 
                 # apply content matching step
                 if content is not None and l >= 3:
@@ -99,7 +93,34 @@ def optimal_texture(
             with Decoder(l).to(device) as decoder:
                 output = decoder(output_layer)  # decode back to image space
 
+    if color_transfer is not None:
+        content_hls = rgb_to_hls(content)
+        output_hls = rgb_to_hls(output)
+        target_hls = torch.stack((content_hls[:, 0], output_hls[:, 1], content_hls[:, 2]), dim=1)
+        target = hls_to_rgb(target_hls)
+        if color_transfer == "lum":
+            output = target
+        else:
+            target = target.permute(0, 2, 3, 1)
+            output = output.permute(0, 2, 3, 1)
+            for _ in range(3):
+                output = optimal_transport(output, target, "cdf")
+            output = output.permute(0, 3, 1, 2)
+
     return output
+
+
+def optimal_transport(output_layer, style_layer, hist_mode):
+    rotation = random_rotation(output_layer.shape[-1])
+
+    rotated_output = output_layer @ rotation
+    rotated_style = style_layer @ rotation
+
+    matched_output = hist_match(rotated_output, rotated_style, mode=hist_mode)
+
+    output_layer = matched_output @ rotation.T  # rotate back to normal
+
+    return output_layer
 
 
 def encode_inputs(styles, content, use_pca):
@@ -209,14 +230,15 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "-s", "--style", type=str, nargs="+", action=required_length(1, 2), default="style/graffiti.jpg"
+        "-s", "--style", type=str, nargs="+", action=required_length(1, 2), default=["style/graffiti.jpg"]
     )
     parser.add_argument("-c", "--content", type=str, default=None)
     parser.add_argument("--size", type=int, default=512)
     parser.add_argument("--style_scale", type=float, default=1)
     parser.add_argument("--content_strength", type=float, default=0.01)
     parser.add_argument("--mixing_alpha", type=float, default=0.5)
-    parser.add_argument("--hist_mode", type=str, choices=["sym", "pca", "chol", "cdf"], default="cdf")
+    parser.add_argument("--hist_mode", type=str, choices=["sym", "pca", "chol", "cdf"], default="pca")
+    parser.add_argument("--color_transfer", type=str, default=None, choices=["lum", "opt"])
     parser.add_argument("--no_pca", action="store_true")
     parser.add_argument("--no_multires", action="store_true")
     parser.add_argument("--passes", type=int, default=5)

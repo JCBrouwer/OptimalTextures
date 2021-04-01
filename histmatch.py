@@ -5,13 +5,6 @@ from PIL import Image
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-def swap_color_channel(target, source, colorspace="HSV"):  # YCbCr also works
-    target_channels = list(target.convert(colorspace).split())
-    source_channels = list(source.resize(target.size).convert(colorspace).split())
-    target_channels[0] = source_channels[0]
-    return Image.merge(colorspace, target_channels).convert("RGB")
-
-
 def hist_match(target, source, mode="pca", eps=1e-2):
     target = target.permute(0, 3, 1, 2)  # -> b, c, h, w
     source = source.permute(0, 3, 1, 2)
@@ -58,7 +51,7 @@ def hist_match(target, source, mode="pca", eps=1e-2):
 
 def cdf_match(target, source, bins=128):
     matched = torch.empty_like(target)
-    for i, (target_channel, source_channel) in enumerate(zip(target, source)):
+    for i, (target_channel, source_channel) in enumerate(zip(target.contiguous(), source)):
         lo = torch.min(target_channel.min(), source_channel.min())
         hi = torch.max(target_channel.max(), source_channel.max())
 
