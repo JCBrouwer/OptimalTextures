@@ -6,9 +6,11 @@ This repository is a WIP.
 [Paper notes](notes.md)
 
 ```bash
+git clone https://github.com/JCBrouwer/OptimalTextures
+cd OptimalTextures
 pip install -r requirements
-python style.py -h
-python style.py -s style/graffiti-small.jpg  # texture synthesis
-python style.py -s style/lava-small.jpg -c content/rocket.jpg   # style transfer
-python style.py -s style/zebra.jpg style/pattern-small.jpg   # texture mixing
+python optex.py -h
+python optex.py -s style/graffiti-small.jpg --size 512  # texture synthesis
+python optex.py -s style/lava-small.jpg -c content/rocket.jpg --content_strength 0.01  # style transfer
+python optex.py -s style/zebra.jpg style/pattern-small.jpg --mixing_alpha 0.5  # texture mixing
 ```

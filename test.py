@@ -5,7 +5,7 @@ import torch
 from PIL import Image
 
 from histmatch import *
-from style import *
+from optex import *
 from vgg import Decoder, Encoder
 
 if __name__ == "__main__":

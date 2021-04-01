@@ -78,9 +78,8 @@ def cdf_match(target, source, bins=128):
 
 
 def interp(x, xp, fp):
-    """
-    based on https://github.com/numpy/numpy/blob/main/numpy/core/src/multiarray/compiled_base.c#L489
-    """
+    # based on https://github.com/numpy/numpy/blob/main/numpy/core/src/multiarray/compiled_base.c#L489
+
     f = torch.zeros_like(x)
 
     idxs = torch.searchsorted(xp, x)

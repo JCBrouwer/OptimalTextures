@@ -1,6 +1,7 @@
 import argparse
 from functools import partial
 
+import matplotlib.pyplot as plt
 import torch
 from torch.nn.functional import interpolate
 from tqdm import tqdm
@@ -9,14 +10,14 @@ import util
 from histmatch import *
 from vgg import Decoder, Encoder
 
-downsample = partial(interpolate, mode="bicubic", align_corners=False)
-upsample = downsample
+downsample = partial(interpolate, mode="nearest")  # for mixing mask
+upsample = partial(interpolate, mode="bicubic", align_corners=False)  # for output
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 torch.backends.cudnn.benchmark = True
 
 
-def style(
+def optimal_texture(
     style,
     content=None,
     size=512,
@@ -26,7 +27,7 @@ def style(
     no_pca=False,
     no_multires=False,
     passes=5,
-    iters=750,
+    iters=500,
 ):
     # readability booleans
     use_pca = not no_pca
@@ -45,8 +46,8 @@ def style(
     style_layers, style_eigvs, content_layers = encode_inputs(styles, content, use_pca=use_pca)
 
     if texture_mixing:
-        # initialize spatial mixing mask
         mixing_mask = torch.ceil(torch.rand(style_layers[1].shape[1:3], device=device) - mixing_alpha)[None, None, ...]
+        style_layers = mix_style_layers(style_layers, mixing_mask, mixing_alpha, hist_mode)
 
     pbar = tqdm(total=iters, smoothing=1)
     for p in range(passes):
@@ -59,6 +60,8 @@ def style(
             styles = util.load_styles(args.style, size=sizes[p])
             content = util.maybe_load_content(args.content, size=sizes[p])
             style_layers, style_eigvs, content_layers = encode_inputs(styles, content, use_pca=use_pca)
+            if texture_mixing:
+                style_layers = mix_style_layers(style_layers, mixing_mask, mixing_alpha, hist_mode)
 
         for l in range(5, 0, -1):
             pbar.set_description(f"Current resolution: {sizes[p if use_multires else 0]}, current layer relu{l}_1")
@@ -74,20 +77,11 @@ def style(
                 rotation = random_rotation(output_layer.shape[-1])
 
                 rotated_output = output_layer @ rotation
-                rotated_styles = style_layers[l] @ rotation
+                rotated_style = style_layers[l] @ rotation
 
-                if texture_mixing:
-                    a = mixing_alpha
-                    mix = downsample(mixing_mask, size=rotated_styles.shape[1:3]).permute(0, 2, 3, 1)
-                    A, B = rotated_styles[[0]], rotated_styles[[1]]
-                    AtoB, BtoA = hist_match(A, B, mode=hist_mode), hist_match(B, A, mode=hist_mode)
-                    style_target = (A * (1 - a) + AtoB * a) * mix + (BtoA * (1 - a) + B * a) * (1 - mix)
-                else:
-                    style_target = rotated_styles
+                matched_output = hist_match(rotated_output, rotated_style, mode=hist_mode)
 
-                match_o = hist_match(rotated_output, style_target, mode=hist_mode)
-
-                output_layer = match_o @ rotation.T  # rotate back to normal
+                output_layer = matched_output @ rotation.T  # rotate back to normal
 
                 # apply content matching step
                 if content is not None and l >= 3:
@@ -139,6 +133,21 @@ def fit_pca(tensor):
     features = tensor @ eigvecs
 
     return features, eigvecs
+
+
+def mix_style_layers(style_layers, mixing_mask, mixing_alpha, hist_mode):
+    i = mixing_alpha
+    for l, sl in enumerate(style_layers[1:]):
+        mix = downsample(mixing_mask, size=sl.shape[1:3]).permute(0, 2, 3, 1)
+
+        A, B = sl[[0]], sl[[1]]
+        AtoB = hist_match(A, B, mode=hist_mode)
+        BtoA = hist_match(B, A, mode=hist_mode)
+
+        style_target = (A * (1 - i) + AtoB * i) * mix + (BtoA * (1 - i) + B * i) * (1 - mix)
+
+        style_layers[l + 1] = style_target
+    return style_layers
 
 
 def random_rotation(N):
@@ -207,11 +216,11 @@ if __name__ == "__main__":
     parser.add_argument("--no_pca", action="store_true")
     parser.add_argument("--no_multires", action="store_true")
     parser.add_argument("--passes", type=int, default=5)
-    parser.add_argument("--iters", type=int, default=750)
+    parser.add_argument("--iters", type=int, default=500)
     args = parser.parse_args()
 
     torch.set_grad_enabled(False)
 
-    output = style(**vars(args))
+    output = optimal_texture(**vars(args))
 
     util.save_image(output, args)
