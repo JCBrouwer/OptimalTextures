@@ -103,7 +103,7 @@ def optimal_texture(
         else:
             target = target.permute(0, 2, 3, 1)
             output = output.permute(0, 2, 3, 1)
-            for _ in range(3):
+            for _ in range(1):
                 output = optimal_transport(output, target, "cdf")
             output = output.permute(0, 3, 1, 2)
 
