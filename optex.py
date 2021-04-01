@@ -99,12 +99,13 @@ def optimal_texture(
         target = hls_to_rgb(target_hls)
 
         if color_transfer == "opt":
-            target, output = target.permute(0, 2, 3, 1), output.permute(0, 2, 3, 1)
+            target, output = target.permute(0, 2, 3, 1), output.permute(0, 2, 3, 1)  # [b, h, w, c]
             for _ in range(3):
                 output = optimal_transport(output, target, "cdf")
-            output = output.permute(0, 3, 1, 2)
-        else:
-            return target  # return output with hue & sat from content
+            output = output.permute(0, 3, 1, 2)  # [b, c, h, w]
+
+        elif color_transfer == "lum":
+            return target  # return output with hue and saturation from content
 
     return output
 
