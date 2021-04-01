@@ -45,7 +45,7 @@ def save_image(output, args):
         outs += ["blend", str(args.mixing_alpha)]
     if args.content is not None:
         outs += [name(args.content), "strength", str(args.content_strength)]
-    if args.hist_mode != "chol":
+    if args.hist_mode != "cdf":
         outs += [args.hist_mode + "hist"]
     if args.no_pca:
         outs += ["no_pca"]

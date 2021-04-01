@@ -1,7 +1,6 @@
 import argparse
 from functools import partial
 
-import matplotlib.pyplot as plt
 import torch
 from torch.nn.functional import interpolate
 from tqdm import tqdm
@@ -24,7 +23,7 @@ def optimal_texture(
     content_strength=0.01,
     mixing_alpha=0.5,
     style_scale=1,
-    hist_mode="chol",
+    hist_mode="cdf",
     no_pca=False,
     no_multires=False,
     passes=5,
@@ -217,7 +216,7 @@ if __name__ == "__main__":
     parser.add_argument("--style_scale", type=float, default=1)
     parser.add_argument("--content_strength", type=float, default=0.01)
     parser.add_argument("--mixing_alpha", type=float, default=0.5)
-    parser.add_argument("--hist_mode", type=str, choices=["sym", "pca", "chol", "cdf"], default="chol")
+    parser.add_argument("--hist_mode", type=str, choices=["sym", "pca", "chol", "cdf"], default="cdf")
     parser.add_argument("--no_pca", action="store_true")
     parser.add_argument("--no_multires", action="store_true")
     parser.add_argument("--passes", type=int, default=5)
