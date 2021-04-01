@@ -55,7 +55,9 @@ def cdf_match(target, source, bins=128):
         lo = torch.min(target_channel.min(), source_channel.min())
         hi = torch.max(target_channel.max(), source_channel.max())
 
-        target_hist = torch.histc(target_channel, bins, lo, hi)  # TODO find batched method of getting histogram?
+        # TODO find batched method of getting histogram? maybe based on numpy's impl?
+        # https://github.com/numpy/numpy/blob/v1.20.0/numpy/lib/histograms.py#L678
+        target_hist = torch.histc(target_channel, bins, lo, hi)
         source_hist = torch.histc(source_channel, bins, lo, hi)
         bin_edges = torch.linspace(lo, hi, bins + 1, device=device)[1:]
 
