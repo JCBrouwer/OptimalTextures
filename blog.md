@@ -23,10 +23,9 @@ Steps 2 and 3 are applied iteratively so that the histograms of the two images m
 <div>
 Matching the histograms of features along a single direction in 2D space.
 
-<a href="https://citeseerx.ist.psu.edu/viewdoc/download?doi=10.1.1.458.7694&rep=rep1&type=pdf">F. Pitie et al., "Automated Colour Grading Using Colour Distribution Transfer"</a>
+Source: <a href="https://citeseerx.ist.psu.edu/viewdoc/download?doi=10.1.1.458.7694&rep=rep1&type=pdf">F. Pitie et al., "Automated Colour Grading Using Colour Distribution Transfer"</a>
 </div>
 </div>
-<br>
 
 ### Speeding things up
 This relatively simple algorithm can be augmented by a couple techniques that improve the speed and quality of results.
