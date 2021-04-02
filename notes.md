@@ -54,7 +54,7 @@
     * Solution: repeatedly optimze layers one-by-one in multiple passes to converge to a better average
         * Empirically: 3-6 loops is OK with total number slices equal to number of channels of each layer
  
- <img src="https://raw.githubusercontent.com/JCBrouwer/OptimalTextures/main/algorithm.png" alt="Image of algorithm pseudocode from the paper" height="600px">
+ <img src="./algorithm.png" alt="Image of algorithm pseudocode from the paper" height="600px">
  
  ### PCA
 * The fact that VGG's features become increasingly sparse implies the true representation of texture is lower-dimensional than VGG's features
