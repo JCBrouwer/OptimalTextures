@@ -75,7 +75,7 @@ def optimal_texture(
             with Encoder(l).to(device) as encoder:
                 output_layer = encoder(output)
             if use_pca:
-                output_layer = output_layer @ style_eigvs[l]  # project onto principle components
+                output_layer = output_layer @ style_eigvs[l]  # project onto principal components
 
             for _ in range(iters_per_pass_and_layer[p, l - 1]):
                 output_layer = optimal_transport(output_layer, style_layers[l], hist_mode)
@@ -89,7 +89,7 @@ def optimal_texture(
                 pbar.update(1)
 
             if use_pca:
-                output_layer = output_layer @ style_eigvs[l].T  # reverse principle component projection
+                output_layer = output_layer @ style_eigvs[l].T  # reverse principal component projection
             with Decoder(l).to(device) as decoder:
                 output = decoder(output_layer)  # decode back to image space
 
