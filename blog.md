@@ -19,7 +19,7 @@ Steps 2 and 3 are applied iteratively so that the histograms of the two images m
 
 <br>
 <div class="image" style="text-align: center; text-color: gray; font-size: 10">
-<img src="./histmatch.jpg" alt="Matching the histograms of features along a single direction in 2D space." style="max-width:25%">
+<img src="./histmatch.jpg" alt="Matching the histograms of features along a single direction in 2D space." style="max-width:25%;max-height:25%">
 <div>
 Matching the histograms of features along a single direction in 2D space.
 
