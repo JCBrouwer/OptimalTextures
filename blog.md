@@ -58,7 +58,7 @@ Now we will discuss our implementation of the above concepts. We've managed to r
 ### Histogram matching
 
 ### PCA
-By means of PCA the algorithm selects the channels that contribute to 90% of the variance of each VGG-19 layer. To simplify things, the variance can be seen as the variation of pixel intensities of a certain channel. This means that if the variance of a channel is high, the pixel values of this channel are diversified. Therefore, they are also more likely to contain relevant information about the representation of the image. Then the histogram matching is performed on these reduced number of channels. This process significantly improves the speed of the algorithm. In image ... it can be seen the there are minor differences PCA and no PCA.
+By means of PCA the algorithm selects the channels that contribute to 90% of the variance of each VGG-19 layer. To simplify things, the variance can be seen as the variation of pixel intensities of a certain channel. This means that if the variance of a channel is high, the pixel values of this channel are diversified. Therefore, they are also more likely to contain relevant information about the representation of the image. Then the histogram matching is performed on these reduced number of channels. This process significantly improves the speed of the algorithm. In image below it can be seen the there are minor differences PCA and no PCA.
 <br>
 <div class="image" style="text-align: center; text-color: gray; font-size: 10">
 <img src="output/graffiti-large-no-pca.jpg" alt="PCA results" width="425"/> <img src="output/graffiti-large-pca.jpg" width="425"/>
@@ -67,14 +67,13 @@ No PCA vs PCA.
 </div>
 </div>
 
-<img src="image1.png" width="425"/> <img src="image2.png" width="425"/> 
-
 ### Multi-resolution synthesis
 
 ### Style transfer
 
 ### Color transfer
 For the first step of this part it is required to apply normal style transfer to an input image (and a style image of course). The style transfer is applied on the input image which is represented by 3 channels, namely R(red), G(reen) and B(lue). For luminance style transfer the input image and output image are converted from RGB to H(ue)S(aturation)L(ightening). Then the H and S component from the imput image are combined with the L component of the output image. Our result is displayed in image ... As can be seen from this image, the effect of style transfer is diminished and more colors of the input image are maintained. Whereas, the effect of the style remains visible.
+
 
 ### Texture mixing
 
