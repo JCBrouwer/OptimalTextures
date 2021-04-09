@@ -58,12 +58,21 @@ Now we will discuss our implementation of the above concepts. We've managed to r
 ### Histogram matching
 
 ### PCA
+By means of PCA the algorithm selects the channels that contribute to 90% of the variance of each VGG-19 layer. To simplify things, the variance can be seen as the variation of pixel intensities of a certain channel. This means that if the variance of a channel is high, the pixel values of this channel are diversified. Therefore, they are also more likely to contain relevant information about the representation of the image. Then the histogram matching is performed on these reduced number of channels. This process significantly improves the speed of the algorithm. In image ... it can be seen the there are minor differences PCA and no PCA.
+<br>
+<div class="image" style="text-align: center; text-color: gray; font-size: 10">
+<img src="output/graffiti-large-pca.jpg" alt="Output of PCA" style="max-width:25%;max-height:25%">
+<div>
+PCA vs no PCA.
+</div>
+</div> Waarom kan ik hier de image niet zien??
 
 ### Multi-resolution synthesis
 
 ### Style transfer
 
 ### Color transfer
+
 
 ### Texture mixing
 
