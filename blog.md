@@ -46,6 +46,12 @@ The naive approach to color transfer would be to directly apply the optimal tran
 #### Texture mixing
 Another task which the paper applies the new algorithm to is texture mixing. Here, two styles should be blended into a texture which retains aspects of both. To achieve this, the target feature tensors are edited to have aspects of both styles. First the optimal transport mapping from the first style to the second and from the second style to the first is calculated. This is as simple as matching the histogram of each style with the histogram of the other as target. This gives 4 feature tensors that are combined to form the new target.
 
+A blending value between 0 and 1 is introduced to control the weight of each style in the mixture. First each style is blended with its histogram matched version according to blending value. When the blend value is zero, the first style is unchanged, while the second style is 100% the version matched to the histogram of the first style. When the blend value is 0.75, the first style is 1/4 original, 3/4 histogram matched and the second style vice versa.
+
+Next a binary mixing mask is introduced with the percentage of ones corresponding to the blending value. This mask is used to mix between the two interpolated style features. When the blend value is low, the majority of pixels in the feature tensor will be from the first style's feature tensor, when it's high the majority comes from the second style.
+
+This is repeated at each depth in the VGG autoencoder. These doubly blended feature targets are then directly used in the rest of the optimization, which proceeds as usual.
+
 #### Mask-guided synthesis
 
 
