@@ -53,7 +53,9 @@ Next a binary mixing mask is introduced with the percentage of ones correspondin
 This is repeated at each depth in the VGG autoencoder. These doubly blended feature targets are then directly used in the rest of the optimization, which proceeds as usual.
 
 #### Mask-guided synthesis
+The final application of optimal textures is mask-guided synthesis. In this task, a style image, style mask, and content mask are used as input. The parts of the style image corresponding to each label in the style mask are then synthesized in the places where each label is present in the content mask.
 
+To achieve this the histogram of the style features is separated into a histogram per label in the mask. Then the output images histogram targets in the optimization are weighted based on the labels in the content mask. Pixels which lie along borders between 2 class labels are optimized with an interpolation between the nearby labels based on the distance to pixels of that class. This ensures that regions along the borders interpolate smoothly following the statistical patterns present in the style image.
 
 ## Replication
 
