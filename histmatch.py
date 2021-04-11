@@ -49,7 +49,7 @@ def hist_match(target, source, mode="pca", eps=1e-2):
     return matched.permute(0, 2, 3, 1)  # -> b, h, w, c
 
 
-def cdf_match(target, source, bins=128):
+def cdf_match(target, source, bins=256):
     matched = torch.empty_like(target)
     for i, (target_channel, source_channel) in enumerate(zip(target.contiguous(), source)):
         lo = torch.min(target_channel.min(), source_channel.min())
@@ -78,16 +78,15 @@ def interp(x, xp, fp):
     f = torch.zeros_like(x)
 
     idxs = torch.searchsorted(xp, x)
-    idxs1 = (idxs + 1).clamp(0, len(xp) - 1)
+    idxs_next = (idxs + 1).clamp(0, len(xp) - 1)
 
-    slopes = (fp[idxs1] - fp[idxs]) / (xp[idxs1] - xp[idxs])
+    slopes = (fp[idxs_next] - fp[idxs]) / (xp[idxs_next] - xp[idxs])
     f = slopes * (x - xp[idxs]) + fp[idxs]
 
     infinite = ~torch.isfinite(f)
-    # f[infinite] = fp[idxs[infinite]]
     if infinite.any():
-        infidxs1 = idxs1[infinite]
-        f[infinite] = slopes[infinite] * (x[infinite] - xp[infidxs1]) + fp[infidxs1]
+        inf_idxs_next = idxs_next[infinite]
+        f[infinite] = slopes[infinite] * (x[infinite] - xp[inf_idxs_next]) + fp[inf_idxs_next]
 
         still_infinite = ~torch.isfinite(f)
         if still_infinite.any():

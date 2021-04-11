@@ -30,7 +30,12 @@ def optimal_texture(
     no_multires=False,
     passes=5,
     iters=500,
+    seed=None,
 ):
+    if seed is not None:
+        torch.manual_seed(seed)
+        torch.backends.cudnn.deterministic = True
+
     # readability booleans
     use_pca = not no_pca
     use_multires = not no_multires
@@ -243,6 +248,7 @@ if __name__ == "__main__":
     parser.add_argument("--no_multires", action="store_true")
     parser.add_argument("--passes", type=int, default=5)
     parser.add_argument("--iters", type=int, default=500)
+    parser.add_argument("--seed", type=int, default=None)
     args = parser.parse_args()
 
     torch.set_grad_enabled(False)
