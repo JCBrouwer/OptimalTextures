@@ -18,7 +18,7 @@ The core algorithm introduced by Optimal Textures consists of 4 steps:
 Steps 2 and 3 are applied iteratively so that the histograms of the two images match from a large selection of random "viewing angles". This process is also applied at 5 different layers within the VGG-19 network (relu1_1, relu2_1, relu3_1, etc.). This ensures that the statistics of the output image match the style image in terms of the entire hierarchy of image features that VGG-19 has learned to be important for distinguishing images. A single histogram matching step applied in 2D is shown in the figure below (in reality this process is being applied in 64 - 512 dimensions, depending on the layer in VGG).
 
 <br>
-<div style="text-align: center; text-color: gray; font-size: 10px">
+<div style="text-align: center; text-color: gray; font-size: 11px">
 <img src="./histmatch.jpg" alt="Matching the histograms of features along a single direction in 2D space." width="425">
 <div>
 Matching the histograms of features along a single direction in 2D space.
@@ -71,20 +71,20 @@ Once features are encoded, we need to rotate before matching their histograms. T
 ### Histogram matching
 Matching N-channel histograms is the true heart of Optimal Textures. Therefore it is important that this part of the algorithm is fast. The classic way of matching histograms is to convert both histograms to CDFs and then use the source CDF as a look up table to remap each color intensity in the target CDF.
 
-<figure style="text-align: center; text-color: gray; font-size: 10px">
+<figure style="text-align: center; text-color: gray; font-size: 11px">
 <img src="https://upload.wikimedia.org/wikipedia/commons/7/73/Histmatching.svg" width="400"/>
-<figcaption style="text-align: center; text-color: gray; font-size: 10px">Intensity value x<sub>1</sub> in the image gets mapped to intensity x<sub>2</sub>.
+<figcaption style="text-align: center; text-color: gray; font-size: 11px">Intensity value x<sub>1</sub> in the image gets mapped to intensity x<sub>2</sub>.
 
 Source: <a href="https://en.wikipedia.org/wiki/Histogram_matching">Wikipedia article on histogram matching</a></figcaption>
 </figure>
 
 However, we found this method difficult to implement efficiently. First of all, the PyTorch function for calculating histograms, `torch.histc`, does not support batched calculation. Trying to use the ([experimental as of time of writing](https://github.com/pytorch/pytorch/issues/42368)) `torch.vmap` function to auto-vectorize also leads to errors (related to underlying ATen functions not having vectorization rules). Secondly, most implementations of this method we could find rely on the `np.interp` function which does not have a direct analogue in PyTorch. We tried translating the NumPy implementation to PyTorch, however, our implementation seems to create grainy artifacts for smaller number of bins in the histogram. Therefore we set the default to 256 instead of 128 as suggested in the paper.
 
-<div style="text-align: center; text-color: gray; font-size: 10px">
+<div style="text-align: center; text-color: gray; font-size: 11px">
 <figure>
 <img src="output/candy-large_toofewbins.png" width="256"/>
 </figure>
-<figcaption style="text-align: center; text-color: gray; font-size: 10px">Artifacts seen with 128 bin histograms</figcaption>
+<figcaption style="text-align: center; text-color: gray; font-size: 11px">Artifacts seen with 128 bin histograms</figcaption>
 </div>
 
 As an alternative, we added the histogram matching strategies used by Gatys et al. in [Controlling Perceptual Factors in Neural Style Transfer](https://arxiv.org/abs/1611.07865) (our implementation is based on [this implementation using NumPy](https://github.com/ProGamerGov/Neural-Tools)). These strategies match histograms by applying a linear transform on different decomposition bases of the covariances of each histogram (principal components, Cholesky decomposition, or symmetric eigenvalues). These strategies can be applied directly to the entire encoded feature tensors (rather than channel by channel) and so are significantly faster. The decompositions all work on the covariance of the tensors which have shapes dependent on the number of channels. This side-steps the need for binned histograms as the covariances will have the same shape regardless of the input image dimensions.
@@ -111,7 +111,7 @@ Each basis gives slightly different results, although in general they are compar
 <img src="output/pattern-large_cholhist_256.png"/>
 <img src="output/pattern-large_symhist_256.png"/>
 </div>
-<figcaption style="text-align: center; text-color: gray; font-size: 10px">Comparison of texture synthesis with different histogram matching modes.</figcaption>
+<figcaption style="text-align: center; text-color: gray; font-size: 11px">Comparison of texture synthesis with different histogram matching modes.</figcaption>
 </figure>
 </div>
 
@@ -121,12 +121,18 @@ To speed up optimization, we decompose the feature tensors of both images to a s
 <br>
 <div style="text-align: center">
 <figure>
+<div>
 <div style="display:inline-block;width:300px">PCA</div>
 <div style="display:inline-block;width:300px">No PCA</div>
+</div>
+<div>
 <img src="output/graffiti-large-no-pca.jpg" width="300"/> 
 <img src="output/graffiti-large-pca.jpg" width="300"/>
+</div>
+<div>
 <img src="output/marble-large-no-pca.png" width="300"/> 
 <img src="output/marble-large-pca.png" width="300"/>
+</div>
 </figure>
 </div>
 
@@ -140,7 +146,7 @@ Below we show the effect of multi-scale resolution on output quality. While the 
 <br>
 <figure style="text-align: center">
 <img src="output/paper-multires.jpg" width="800"/>
-<figcaption style="text-align: center; text-color: gray; font-size: 10px">Figure 6 from the paper</figcaption>
+<figcaption style="text-align: center; text-color: gray; font-size: 11px">Figure 6 from the paper</figcaption>
 </figure>
 
 <figure>
@@ -170,7 +176,7 @@ Below we show the effect of multi-scale resolution on output quality. While the 
 <img src="output/candy-large_cdfhist_no_multires_1024.png" width="256"/>
 <img src="output/candy-large_cdfhist_1024.png" width="256"/>
 </div>
-<figcaption style="text-align: center; text-color: gray; font-size: 10px">Texture synthesis with and without multi-scale rendering using CDF-based histogram matching</figcaption>
+<figcaption style="text-align: center; text-color: gray; font-size: 11px">Texture synthesis with and without multi-scale rendering using CDF-based histogram matching</figcaption>
 </figure>
 
 ### Style transfer
@@ -211,7 +217,7 @@ Rather than matching the histograms of the content and output image, output feat
 <div style="display:inline-block;width:172px">1</div>
 </div>
 
-<figcaption style="text-align: center; text-color: gray; font-size: 10px"></figcaption>
+<figcaption style="text-align: center; text-color: gray; font-size: 11px"></figcaption>
 </figure>
 
 ### Color transfer
