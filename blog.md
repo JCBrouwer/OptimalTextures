@@ -220,9 +220,16 @@ Rather than matching the histograms of the content and output image, output feat
 <figcaption style="text-align: center; text-color: gray; font-size: 11px"></figcaption>
 </figure>
 
-### Color transfer
+### Luminance transfer
 For the first step of this part it is required to apply normal style transfer to an input image (and a style image of course). The style transfer is applied on the input image which is represented by 3 channels, namely R(red), G(reen) and B(lue). For luminance style transfer the input image and output image are converted from RGB to H(ue)S(aturation)L(ightening). Then the H and S component from the imput image are combined with the L component of the output image. 
 Our result is displayed the image below. As can be seen from this image, the effect of style transfer is diminished and more colors of the input image are maintained. Whereas, the effect of the style remains visible.
+
+<div style="text-align: center; text-color: gray; font-size: 11px">
+<figure>
+<img src="output/luminance Style transfer.png" width="256"/>
+</figure>
+<figcaption style="text-align: center; text-color: gray; font-size: 11px">Artifacts seen with 128 bin histograms</figcaption>
+</div>
 
 ### Texture mixing
 
