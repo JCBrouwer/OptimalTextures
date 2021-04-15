@@ -6,26 +6,30 @@ from PIL import Image
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-def load_styles(style_files, size, scale):
+def load_styles(style_files, size, scale, oversize):
     styles = []
     for style_file in style_files:
-        styles.append(load_image(style_file, size, scale))
+        styles.append(load_image(style_file, size, scale, not oversize))
     return styles
 
 
 def maybe_load_content(content_file, size):
     content = None
     if content_file is not None:
-        content = load_image(content_file, size)
+        content = load_image(content_file, size, no_quality_loss=False)
     return content
 
 
-def load_image(path, size, scale=1):
+def load_image(path, size, scale=1, no_quality_loss=True):
     img = Image.open(path).convert(mode="RGB")
 
     size *= scale
     wpercent = size / float(img.size[0])
     hsize = int((float(img.size[1]) * float(wpercent)))
+
+    if no_quality_loss:
+        size = min(int(size), img.size[0])
+        hsize = min(hsize, img.size[1])
 
     size = round32(size)
     hsize = round32(hsize)
@@ -56,7 +60,7 @@ def save_image(output, args):
         outs += [args.color_transfer]
     outs += [str(args.size)]
     outname = "_".join(outs)
-    torchvision.utils.save_image(output, f"output/{outname}.png")
+    torchvision.utils.save_image(output, f"{args.output_dir}/{outname}.png")
 
 
 def name(filepath):

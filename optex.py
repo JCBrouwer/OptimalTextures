@@ -21,9 +21,10 @@ def optimal_texture(
     style,
     content=None,
     size=512,
-    content_strength=0.01,
+    content_strength=0.1,
     mixing_alpha=0.5,
     style_scale=1,
+    oversize_style=False,
     hist_mode="pca",
     color_transfer=None,
     no_pca=False,
@@ -31,6 +32,7 @@ def optimal_texture(
     passes=5,
     iters=500,
     seed=None,
+    **kwargs,
 ):
     if seed is not None:
         torch.manual_seed(seed)
@@ -45,7 +47,7 @@ def optimal_texture(
     iters_per_pass_and_layer, sizes = get_iters_and_sizes(size, iters, passes, use_multires)
 
     # load inputs and initialize output image
-    styles = util.load_styles(style, size=sizes[0], scale=style_scale)
+    styles = util.load_styles(style, size=sizes[0], scale=style_scale, oversize=oversize_style)
     content = util.maybe_load_content(content, size=sizes[0])
     output = torch.rand(content.shape if content is not None else (1, 3, sizes[0], sizes[0]), device=device)
 
@@ -56,12 +58,12 @@ def optimal_texture(
         mixing_mask = torch.ceil(torch.rand(style_layers[1].shape[1:3], device=device) - mixing_alpha)[None, None, ...]
         style_layers = mix_style_layers(style_layers, mixing_mask, mixing_alpha, hist_mode)
 
-    pbar = tqdm(total=iters, smoothing=1)
+    pbar = tqdm(total=iters, smoothing=0)
     for p in range(passes):
 
         if use_multires and p != 0:
             # reload style and content at the new size
-            styles = util.load_styles(args.style, size=sizes[p], scale=style_scale)
+            styles = util.load_styles(args.style, size=sizes[p], scale=style_scale, oversize=oversize_style)
             content = util.maybe_load_content(args.content, size=sizes[p])
 
             # upsample to next size
@@ -240,6 +242,7 @@ if __name__ == "__main__":
     parser.add_argument("-c", "--content", type=str, default=None)
     parser.add_argument("--size", type=int, default=512)
     parser.add_argument("--style_scale", type=float, default=1)
+    parser.add_argument("--oversize_style", action="store_true")
     parser.add_argument("--content_strength", type=float, default=0.01)
     parser.add_argument("--mixing_alpha", type=float, default=0.5)
     parser.add_argument("--hist_mode", type=str, choices=["sym", "pca", "chol", "cdf"], default="pca")
@@ -249,6 +252,7 @@ if __name__ == "__main__":
     parser.add_argument("--passes", type=int, default=5)
     parser.add_argument("--iters", type=int, default=500)
     parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument("--output_dir", type=str, default="output/")
     args = parser.parse_args()
 
     torch.set_grad_enabled(False)

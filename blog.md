@@ -2,29 +2,29 @@
 
 Hans Brouwer & Jim Kok
 
-In this post we give an overview of our replication of the paper [Optimal Textures: Fast and Robust Texture Synthesis and Style Transfer through Optimal Transport](https://arxiv.org/abs/2010.14702) for the [Delft University of Technology Deep Learning course CS4240](https://cs4240tud.github.io/). Our implementation in PyTorch can be found [here](https://github.com/JCBrouwer/OptimalTextures).
+In this post we give an overview of our replication of the paper [Optimal Textures: Fast and Robust Texture Synthesis and Style Transfer through Optimal Transport](https://arxiv.org/abs/2010.14702) for the [Delft University of Technology Deep Learning course CS4240](https://cs4240tud.github.io/). First we'll discuss the contributions in the paper as we understand them, then go over our implementation of each part, and finally compare the algorithm with competing techniques.
+
+Our implementation in PyTorch, called `optex`, can be found [here](https://github.com/JCBrouwer/OptimalTextures).
 
 ## Overview
 Optimal Textures presents a new approach for texture synthesis and several other related tasks. The algorithm can directly optimize the histograms of intermediate features of an image recognition model (VGG-19) to match the statistics of a target image. This avoids the costly backpropagation which is required by other approaches which try to instead match 2nd order statistics like the Gram matrix (the correlations between intermediate features). Compared to other algorithms which seek to speed up texture synthesis, Optimal Textures achieves a better quality in less time.
 
 The approach builds on a VGG-19 autoencoder which is trained to invert internal features of a pretrained VGG-19 network back to an image. This was originally introduced by Li et al. in [Universal Style Transfer via Feature Transforms](https://arxiv.org/abs/1705.08086). This autoencoder allows one to encode an image to feature space, perform a direct optimization on these features, and then decode back to an image.
 
+The reason this approach is faster than the backpropagation-based approach is that the internal feature representation of the image is adjusted directly to make it more similar to the target. This allows the use of the decoder to get an optimized image back. With backpropagation, a loss is placed on the Gram matrices of the image and its targets. These correlations cannot be easily inverted back to the feature representation and so the decoder cannot be used. The image must then be updated based on the gradients calculated all the back and forth through the VGG network.
+
+### Algorithm
 The core algorithm introduced by Optimal Textures consists of 4 steps:
 1. Encode a target and style image to the intermediate features of an image recognition network
 2. Apply a random rotation to the features of both images
 3. Match the histograms of the rotated feature tensors
 4. Undo the rotation and decode the features back to image space
 
-Steps 2 and 3 are applied iteratively so that the histograms of the two images match from a large selection of random "viewing angles". This process is also applied at 5 different layers within the VGG-19 network (relu1_1, relu2_1, relu3_1, etc.). This ensures that the statistics of the output image match the style image in terms of the entire hierarchy of image features that VGG-19 has learned to be important for distinguishing images. A single histogram matching step applied in 2D is shown in the figure below (in reality this process is being applied in 64 - 512 dimensions, depending on the layer in VGG).
+Steps 2 and 3 are applied iteratively so that the histograms of the two images match from a large selection of random "viewing angles". This process is also applied at 5 different layers within the VGG-19 network (relu1_1, relu2_1, relu3_1, etc.). This ensures that the statistics of the output image match the style image in terms of the entire hierarchy of image features that VGG-19 has learned to be important for distinguishing images.
 
 <br>
 <div style="text-align: center; text-color: gray; font-size: 11px">
-<img src="./histmatch.jpg" alt="Matching the histograms of features along a single direction in 2D space." width="425">
-<div>
-Matching the histograms of features along a single direction in 2D space.
-
-Source: <a href="https://citeseerx.ist.psu.edu/viewdoc/download?doi=10.1.1.458.7694&rep=rep1&type=pdf">F. Pitie et al., "Automated Colour Grading Using Colour Distribution Transfer"</a>
-</div>
+<img src="./algo.png">
 </div>
 
 ### Speeding things up
@@ -32,7 +32,7 @@ This relatively simple algorithm can be augmented by a couple techniques that im
 
 The first technique is to project the matched features to a smaller subspace and perform the optimization there. The chosen subspace is the one spanned by the first principal components that capture 90% of the total variance in the style features. This reduces the dimension of the feature tensors while retaining the majority of their descriptive capacity.
 
-The second technique is to synthesize images starting from a small resolution (256 pixels) and progressively upscaling during optimization to the desired size. Once again, this reduces the size of the feature tensors (this time along the spatial axes) which improves speed. Another benefit is that longer-range relations in the example image are captured as the receptive field of VGG-19's convolutions is larger for the smaller starting images.
+The second technique is to synthesize images starting from a small resolution (256 pixels) and progressively upscaling during optimization to the desired size. Once again, this reduces the size of the feature tensors (this time along the spatial axes) which improves speed. Another benefit is that longer-range relations in the example image are captured as the relative receptive field of VGG-19's convolutions is larger for the smaller starting images.
 
 ### Extensions
 The paper further shows how the basic algorithm can be used for multiple tasks similar to texture synthesis: style transfer, color transfer, texture mixing, and mask-guided synthesis.
@@ -40,8 +40,24 @@ The paper further shows how the basic algorithm can be used for multiple tasks s
 #### Style transfer
 To achieve style transfer, a content image's features are added into the mix. The features of the deepest three layers of the output image are interpolated toward the features of the content image. Notably, the content image's features must be centered around the mean of the style image's features to ensure the two are not tugging the output image back and forth between distant parts of feature space.
 
+<div style="text-align: center; text-color: gray; font-size: 11px">
+<div>
+<img src="content/cat-large.jpg" width="256">
+<img src="style/mechansim.jpg" width="144">
+</div>
+<img src="output/mechansim_cat-large_strength0.05_pcahist_scale0.5_1920.png" width="512">
+</div>
+
 #### Color transfer
-The naive approach to color transfer would be to directly apply the optimal transport algorithm to the images themselves rather to their features. However, the paper introduces an extension of this which preserves the colors of the content image a little better. The basis for this technique is luminance transfer, which takes the hue and saturation channels of the content image (in HSL space) and substitutes them into the output of the optimal transport style transfer. The drawback of luminance transfer is that the finer colored details in the style are no longer present, instead directly taking the color of the underlying content. To remedy this, a few final iterations of the optimal transport algorithm are applied with the luminance transfered output as target. This gives a happy medium between the content focused color transfer of the luminance approach and the style focused color transfer of the naive optimal transfer approach.
+The naive approach to color transfer would be to directly apply the optimal transport algorithm to the images themselves rather to their features. However, the paper introduces an extension of this which preserves the colors of the content image a little better. The basis for this technique is luminance transfer, which takes the hue and saturation channels of the content image (in HSL space) and substitutes them into the output of the optimal transport style transfer. The drawback of luminance transfer is that the finer colored details in the style are no longer present, but instead directly take the color of the underlying content. To remedy this, a few final iterations of the optimal transport algorithm are applied with the luminance transfered output as target. This gives a happy medium between the content focused color transfer of the luminance approach and the style focused color transfer of the naive optimal transfer approach.
+
+<div style="text-align: center; text-color: gray; font-size: 11px">
+<div>
+<img src="content/city-large.jpg" width="256">
+<img src="style/green-paint-large.jpg" width="256">
+</div>
+<img src="output/green-paint-large_city_strength0.1_cdfhist_scale0.5_lum_2048.png" width="512">
+</div>
 
 #### Texture mixing
 Another task which the paper applies the new algorithm to is texture mixing. Here, two styles should be blended into a texture which retains aspects of both. To achieve this, the target feature tensors are edited to have aspects of both styles. First the optimal transport mapping from the first style to the second and from the second style to the first is calculated. This is as simple as matching the histogram of each style with the histogram of the other as target. This gives 4 feature tensors that are combined to form the new target.
@@ -69,10 +85,10 @@ One thing to note is that we follow pseudo-code from the paper which seems to in
 Once features are encoded, we need to rotate before matching their histograms. To this end, we draw random rotation matrices from the [Special Orthogonal Group](https://en.wikipedia.org/wiki/Orthogonal_group). These are matrices that can perform any N-dimensional rotation and have the handy property that their transpose is also their inverse. We've translated to PyTorch [SciPy's function](https://docs.scipy.org/doc/scipy/reference/generated/scipy.stats.special_ortho_group.html#scipy.stats.special_ortho_group) that can draw uniformly from the N-dimensional special orthogonal group (giving us uniformly distributed random rotations). For each iteration, we draw a random matrix, rotate by multiplying both the style and output features by this matrix, perform histogram matching, and then rotate back by multiplying with the transpose of the rotation matrix.
 
 ### Histogram matching
-Matching N-channel histograms is the true heart of Optimal Textures. Therefore it is important that this part of the algorithm is fast. The classic way of matching histograms is to convert both histograms to CDFs and then use the source CDF as a look up table to remap each color intensity in the target CDF.
+Matching N-channel histograms is the true heart of Optimal Textures. Therefore it is important that this part of the algorithm is fast and reliable. The classic way of matching histograms is to convert both histograms to CDFs and then use the source CDF as a look up table to remap each color intensity in the target CDF.
 
 <figure style="text-align: center; text-color: gray; font-size: 11px">
-<img src="https://upload.wikimedia.org/wikipedia/commons/7/73/Histmatching.svg" width="400"/>
+<img src="https://upload.wikimedia.org/wikipedia/commons/7/73/Histmatching.svg"/>
 <figcaption style="text-align: center; text-color: gray; font-size: 11px">Intensity value x<sub>1</sub> in the image gets mapped to intensity x<sub>2</sub>.
 
 Source: <a href="https://en.wikipedia.org/wiki/Histogram_matching">Wikipedia article on histogram matching</a></figcaption>
@@ -134,6 +150,15 @@ To speed up optimization, we decompose the feature tensors of both images to a s
 <img src="output/marble-large-pca.png" width="300"/>
 </div>
 </figure>
+</div>
+
+The efficiency gains are substantial, however.
+
+<div style="text-align: center">
+<figure>
+<img src="pca-gains.jpg" width="600"/>
+</figure>
+<figcaption style="text-align: center; text-color: gray; font-size: 11px">Mean number of components needed for 90% variance in each layer over 5 different textures.</figcaption>
 </div>
 
 ### Multi-scale synthesis
@@ -217,20 +242,177 @@ Rather than matching the histograms of the content and output image, output feat
 <div style="display:inline-block;width:172px">1</div>
 </div>
 
-<figcaption style="text-align: center; text-color: gray; font-size: 11px"></figcaption>
+<figcaption style="text-align: center; text-color: gray; font-size: 11px">Style transfer with varying content strength.</figcaption>
 </figure>
 
 ### Color transfer
-For the first step of this part it is required to apply normal style transfer to an input image (and a style image of course). The style transfer is applied on the input image which is represented by 3 channels, namely R(red), G(reen) and B(lue). For luminance style transfer the input image and output image are converted from RGB to H(ue)S(aturation)L(ightening). Then the H and S component from the imput image are combined with the L component of the output image. Our result is displayed in image ... As can be seen from this image, the effect of style transfer is diminished and more colors of the input image are maintained. Whereas, the effect of the style remains visible.
+<!-- For the first step of this part it is required to apply normal style transfer to an input image (and a style image of course). The style transfer is applied on the input image which is represented by 3 channels, namely R(red), G(reen) and B(lue). For luminance style transfer the input image and output image are converted from RGB to H(ue)S(aturation)L(ightening). Then the H and S component from the imput image are combined with the L component of the output image. Our result is displayed in image ... As can be seen from this image, the effect of style transfer is diminished and more colors of the input image are maintained. Whereas, the effect of the style remains visible. -->
+
+We noticed some discrepancies between our results with optimal color transfer versus those reported in the paper. Shown below is our attempt at recreation of figure 9 from the paper compared with the actual figure.
+
+<figure>
+<div style="text-align: center">
+<img src="content/city-large.jpg" width="300"/> 
+<img src="style/green-paint-large.jpg" width="300"/> 
+<img src="output/green-paint-large_city_strength0.1_cdfhist_scale0.5_512.png" width="300"/> 
+</div>
+<div style="text-align: center">
+<div style="display:inline-block;width:300px">Content</div>
+<div style="display:inline-block;width:300px">Style</div>
+<div style="display:inline-block;width:300px">Output</div>
+</div>
+<div style="text-align: center">
+<img src="output/green-paint-large_city_strength0.1_cdfhist_scale0.5_onlyopt_512.png" width="300"/> 
+<img src="output/green-paint-large_city_strength0.1_cdfhist_scale0.5_lum_512.png" width="300"/> 
+<img src="output/green-paint-large_city_strength0.1_cdfhist_scale0.5_opt_512.png" width="300"/> 
+</div>
+<div style="text-align: center">
+<div style="display:inline-block;width:300px">Optimal color transport only</div>
+<div style="display:inline-block;width:300px">Luminance transfer</div>
+<div style="display:inline-block;width:300px">Combined approach</div>
+</div>
+<figcaption style="text-align: center; text-color: gray; font-size: 11px">Green colorations in our results.</figcaption>
+<br>
+<div style="text-align: center">
+<img src="figure9.png" width="1024"/> 
+<div>
+<figcaption style="text-align: center; text-color: gray; font-size: 11px">Figure 9 from the paper.</figcaption>
+</figure>
+
+We're unsure what causes the issue we see, but the added green coloration differs significantly from the expected result. One possible explanation is that our increased number bins in the histogram happens to carry over more green from the histogram of the original content. There is a tiny green spot in the content (bottom right), so the result might just be the algorithm working as intended.
 
 ### Texture mixing
+Our texture mixing results very closely match the results in the paper. The interpolation between the two textures seems semantically smooth.
+
+<figure>
+<div style="text-align: center">
+<img src="style/zebra.jpg" width="172"/> 
+<img src="style/pattern-small.jpg" width="172"/>
+</div>
+
+<div style="text-align: center">
+<div style="display:inline-block;width:172px">0</div>
+<div style="display:inline-block;width:172px">0.1</div>
+<div style="display:inline-block;width:172px">0.2</div>
+<div style="display:inline-block;width:172px">0.3</div>
+<div style="display:inline-block;width:172px">0.4</div>
+</div>
+
+<div style="text-align: center">
+<img src="output/zebra_pattern-small_blend_0.0_512.jpg" width="172"/> 
+<img src="output/zebra_pattern-small_blend_0.1_512.jpg" width="172"/>
+<img src="output/zebra_pattern-small_blend_0.2_512.jpg" width="172"/>
+<img src="output/zebra_pattern-small_blend_0.3_512.jpg" width="172"/>
+<img src="output/zebra_pattern-small_blend_0.4_512.jpg" width="172"/>
+</div>
+
+<div style="text-align: center">
+<img src="output/zebra_pattern-small_blend_0.5_512.jpg" width="172"/> 
+<img src="output/zebra_pattern-small_blend_0.7_512.jpg" width="172"/>
+<img src="output/zebra_pattern-small_blend_0.8_512.jpg" width="172"/>
+<img src="output/zebra_pattern-small_blend_0.9_512.jpg" width="172"/>
+<img src="output/zebra_pattern-small_blend_1.0_512.jpg" width="172"/>
+</div>
+
+<div style="text-align: center">
+<div style="display:inline-block;width:172px">0.5</div>
+<div style="display:inline-block;width:172px">0.7</div>
+<div style="display:inline-block;width:172px">0.8</div>
+<div style="display:inline-block;width:172px">0.9</div>
+<div style="display:inline-block;width:172px">1.0</div>
+</div>
+<figcaption style="text-align: center; text-color: gray; font-size: 11px">Blending between two textures with varying interpolation value.</figcaption>
+</figure>
+
+Our implementation also allows for doing style transfer with mixed textures.
+
+<div style="text-align: center">
+<div>
+<img src="content/bridge.jpg" width="128"/> 
+<img src="style/graffiti.jpg" height="128"/>
+<img src="style/xo.jpg" height="128"/>
+</div>
+<img src="output/graffiti-small_xo-small_blend_0.333_bridge_strength_0.03_512.jpg" width="400"/>
+</div>
+<figcaption style="text-align: center; text-color: gray; font-size: 11px">Texture mixing style transfer.</figcaption>
+</figure>
 
 
 ## Performance analysis
-TODO performance of different parts of our algorithm at different sizes
+While the paper reports significantly improved speed relative to the original "A Neural Algorithm of Artistic Style" and improved quality relative to "Universal Style Transfer via Feature Trasforms", there are other implementations of techniques that are significantly faster or higher quality. To get a sense of how Optimal Textures compares to more recent techniques, we compare it in terms of speed and quality with [`maua-style`](https://github.com/JCBrouwer/`maua-style`/tree/better-config) and [`texture-synthesis`](https://github.com/EmbarkStudios/`texture-synthesis`).
 
-==> where can most improvement be booked?
+`maua-style` is my own implementation of the optimization based style transfer approach. It uses multi-scale rendering and histogram matching between each scale, as well as switching to progressively less memory-intensive image recognition networks as the image size increases. These improvements make it faster and higher quality, as well as allowing for much larger images for the same amount of VRAM than the original [neural-style](https://github.com/jcjohnson/neural-style).
 
-## Comparison with similar techniques
-Performance comparison and quality comparison of comparable techniques
+`texture-synthesis` is a "non-parametric example-based algorithm for image generation", in the words of Embark Studios, the company that created the implementation. It progressively fills in the image by using patch level statistics to guess what the value of a pixel should be based on the neighbors that are already present. This results in copies of different parts of the image scattered around the output, yet blending together seamlessly.
 
+Below are the results of running texture synthesis with each of the algorithms for square images of size 256, 512, 724, 1024, 1448, 2048, 2560, and 3072 pixels per side. These results were recorded on a GTX 1080 Ti GPU with 11 GB of VRAM. 
+
+<figure>
+<div style="text-align: center">
+<img src="perf.png" width="724"/>
+</div>
+<figcaption style="text-align: center; text-color: gray; font-size: 11px">Total execution time versus number of pixels for the different algorithms.</figcaption>
+</figure>
+
+Immediately apparent is the speed and favorable scaling of `texture-synthesis` (labeled embark). This algorithm scales linearly with the number of pixels in the image. This is logical as it does the same routine for each pixel.
+
+`optex` is the next fastest algorithm. Although, this is only the case when using the faster linear transform based histogram matching. Even with PCA and multi-scale rendering, the CDF based histogram matching is not able to outperform the multi-scale `maua-style`. Also notable is that `optex` ran out of memory for images larger 1448x1448. These OOM errors happened either in the call to `torch.svd` to calculate PCA of the internal features of relu2_1 or when encoding the image to relu5_1.
+
+Finally, `maua-style` was able to generate images all the way up to 3072x3072, albeit 8x slower than `texture-synthesis` and about 3x slower than our optimal textures implementation.
+
+## Quality comparison
+
+Next we'll take a look at the quality of results that each algorithm generates. They each have their own distinct character so it might not always be the best choice to just use the fastest one. The input images below are by unsplash.com users [Ciaran O'Brien](https://unsplash.com/@icidius), [Pawel Nolbert](https://unsplash.com/@hellocolor), [V Srinivasan](https://unsplash.com/@timesofwander), [Franz Schekolin](https://unsplash.com/@scheko46), and [Paweł Czerwiński](https://unsplash.com/@pawel_czerwinski).
+
+### Texture synthesis
+<div style="text-align: center">
+<img src="style/pawel-czerwinski-Mxi0EdBIpZk-unsplash.jpg" height="384"/> 
+<img src="output/pawel-czerwinski-Mxi0EdBIpZk-unsplash_cdfhist_1600.png" width="384"/>
+<img src="output/random_pawel-czerwinski-Mxi0EdBIpZk-unsplash_11134b_1448.png" width="384"/>
+<img src="output/pawel-czerwinski-Mxi0EdBIpZk-1448.png" width="384"/>
+</div>
+
+Our `optex` result seems to be most scrambled of the three approachs. The `maua-style` result seems to have some faded patches, but reproduces the images characteristics well. The `texture-synthesis` result is most true to the original texture, there are some duplicate features in the image though.
+
+### Style transfer
+
+Now for style transfer. The two input images are shown at the top. They are each used as content and style for each other.
+
+<div style="text-align: center">
+<img src="style/franz-schekolin-IOiW0iGKwQg-unsplash.jpg" height="256"/> 
+<img src="style/v-srinivasan-h64wUnq6ZxM-unsplash.jpg" height="256"/>
+</div>
+<div style="text-align: center">
+<img src="output/franz-schekolin-IOiW0iGKwQg-unsplash_v-srinivasan-h64wUnq6ZxM-unsplash_strength0.01_pcahist_1024.png" height="256"/> 
+<img src="output/v-srinivasan-h64wUnq6ZxM-unsplash_franz-schekolin-IOiW0iGKwQg-unsplash_strength0.01_pcahist_1024.png" height="256"/>
+</div>
+<div style="text-align: center">
+<img src="output/v-srinivasan-h64wUnq6ZxM-unsplash_franz-schekolin-IOiW0iGKwQg-unsplash_1024.png" height="256"/> 
+<img src="output/franz-schekolin-IOiW0iGKwQg-unsplash_v-srinivasan-h64wUnq6ZxM-unsplash_1024.png" height="256"/>
+</div>
+<div style="text-align: center">
+<img src="output/v-srinivasan-h64wUnq6ZxM-franz-schekolin-IOiW0iGKwQg.png" height="256"/> 
+<img src="output/franz-schekolin-IOiW0iGKwQg-v-srinivasan-h64wUnq6ZxM.png" height="256"/>
+</div>
+
+Once again, `optex` seems to be slightly more scrambled than the other two approaches. The flames/white leaves are all around the image rather than only on the central object. `maua-style` more faithfully captures the style of each, but has faded patches on the bottom left of the darker image. `texture-synthesis` seems to overfit to the content in both cases, while not really recreating the style as faithfully. Perhaps the default content-style tradeoff weights the content higher than the other algorithms.
+
+### Texture mixing
+<div style="text-align: center">
+<img src="style/ciaran-o-brien-ITu-L0FuPPk-unsplash-small.jpg" width="256"/> 
+<img src="style/pawel-nolbert-4u2U8EO9OzY-unsplash.jpg" width="256"/> 
+</div>
+<div style="text-align: center">
+<img src="output/ciaran-o-brien-ITu-L0FuPPk-unsplash-small_pawel-nolbert-4u2U8EO9OzY-unsplash_blend0.5_pcahist_724.png" width="300"/>
+<img src="output/random_ciaran-o-brien-ITu-L0FuPPk-unsplash-small_pawel-nolbert-4u2U8EO9OzY-unsplash_53ade4_1448.png" width="300"/>
+<img src="output/ciaran-o-brien-ITu-L0FuPPk-unsplash-small-pawel-nolbert-4u2U8EO9OzY-unsplash-1024.png" width="300"/>
+</div>
+
+Here, both `optex` and `maua-style` seem to lose most of the larger structure in the images. However, the blend between the styles is fairly good. `texture-synthesis` is very clearly copying over large parts of the images here. It has essentially just spliced them into the top left and bottom right corners, not really blending successfully.
+
+## Final thoughts
+All in all, our replication of "Optimal Textures" has been a success. We were able to implement the majority of the techniques discussed in the paper. We built on the pre-trained VGG-19 autoencoder from "Universal Style Transfer via Feature Trasforms", we made liberal use of code we found online (thank you SciPy, NumPy, and ProGamerGov!), and finally were able to link it all together in pure PyTorch to create a working algorithm.
+
+The method does indeed have a strong speed/quality tradeoff, however, it still leaves room for improvement in terms of larger-scale features of textures. Perhaps a combination of this fast histogram matching with the slower, high-quality optimization approach can bring together the best parts of each algorithm.
+
+We would like to thank the organizers of the course for the great project and Casper van Engelenburg for his guidance and feedback along the way. If you made it all the way the way through this, thank you for reading, and feel free to give [`optex`](https://github.com/JCBrouwer/OptimalTextures) a try your self!

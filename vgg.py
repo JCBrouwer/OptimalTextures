@@ -3,6 +3,7 @@ Adapted from https://github.com/pietrocarbo/deep-transfer
 """
 
 import gc
+import os
 from itertools import chain
 
 import torch
@@ -139,7 +140,7 @@ class Encoder(nn.Module):
         assert isinstance(depth, int) and 1 <= depth <= 5
         self.depth = depth
         self.model = nn.Sequential(*chain.from_iterable(vgg_normalized(None)[:depth]))
-        self.model.load_state_dict(torch.load(f"models/vgg_normalised_conv{depth}_1.pth"))
+        self.model.load_state_dict(torch.load(f"{os.path.dirname(__file__)}/models/vgg_normalised_conv{depth}_1.pth"))
 
     def __enter__(self):
         return self
@@ -159,7 +160,7 @@ class Decoder(nn.Module):
         assert isinstance(depth, int) and 1 <= depth <= 5
         self.depth = depth
         self.model = nn.Sequential(*chain.from_iterable(feature_invertor(None)[-depth:]))
-        self.model.load_state_dict(torch.load(f"models/feature_invertor_conv{depth}_1.pth"))
+        self.model.load_state_dict(torch.load(f"{os.path.dirname(__file__)}/models/feature_invertor_conv{depth}_1.pth"))
 
     def __enter__(self):
         return self
