@@ -228,7 +228,7 @@ Our result is displayed the image below. As can be seen from this image, the eff
 <figure>
 <img src="output/luminance Style transfer.png" width="256"/>
 </figure>
-<figcaption style="text-align: center; text-color: gray; font-size: 11px">Artifacts seen with 128 bin histograms</figcaption>
+<figcaption style="text-align: center; text-color: gray; font-size: 11px">Luminance transfer applied to input and output image</figcaption>
 </div>
 
 ### Texture mixing
