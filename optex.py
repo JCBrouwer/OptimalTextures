@@ -237,22 +237,66 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "-s", "--style", type=str, nargs="+", action=required_length(1, 2), default=["style/graffiti.jpg"]
+        "-s",
+        "--style",
+        type=str,
+        nargs="+",
+        action=required_length(1, 2),
+        default=["style/graffiti.jpg"],
+        help="Example(s) of the style your texture should take",
     )
-    parser.add_argument("-c", "--content", type=str, default=None)
-    parser.add_argument("--size", type=int, default=512)
-    parser.add_argument("--style_scale", type=float, default=1)
-    parser.add_argument("--oversize_style", action="store_true")
-    parser.add_argument("--content_strength", type=float, default=0.01)
-    parser.add_argument("--mixing_alpha", type=float, default=0.5)
-    parser.add_argument("--hist_mode", type=str, choices=["sym", "pca", "chol", "cdf"], default="pca")
-    parser.add_argument("--color_transfer", type=str, default=None, choices=["lum", "opt"])
-    parser.add_argument("--no_pca", action="store_true")
-    parser.add_argument("--no_multires", action="store_true")
-    parser.add_argument("--passes", type=int, default=5)
-    parser.add_argument("--iters", type=int, default=500)
-    parser.add_argument("--seed", type=int, default=None)
-    parser.add_argument("--output_dir", type=str, default="output/")
+    parser.add_argument(
+        "-c", "--content", type=str, default=None, help="The structure/shape you want your image to take"
+    )
+    parser.add_argument(
+        "--size", type=int, default=512, help="The output size of the image (larger output = more memory/time required)"
+    )
+    parser.add_argument(
+        "--style_scale",
+        type=float,
+        default=1,
+        help="Scale the style relative to the generated image. Will affect the scale of details generated.",
+    )
+    parser.add_argument(
+        "--oversize_style",
+        action="store_true",
+        help="Allow scaling of style larger than its original size. Might cause blurry outputs.",
+    )
+    parser.add_argument(
+        "--content_strength",
+        type=float,
+        default=0.01,
+        help="Strength with which to focus on the structure in your content image.",
+    )
+    parser.add_argument(
+        "--mixing_alpha", type=float, default=0.5, help="Value between 0 and 1 for interpolation between 2 textures"
+    )
+    parser.add_argument(
+        "--hist_mode",
+        type=str,
+        choices=["sym", "pca", "chol", "cdf"],
+        default="pca",
+        help="Histogram matching strategy. CDF is slower than the others, but uses less memory. Each gives different results.",
+    )
+    parser.add_argument(
+        "--color_transfer",
+        type=str,
+        default=None,
+        choices=["lum", "opt"],
+        help="Strategy to employ to keep original color of content image.",
+    )
+    parser.add_argument("--no_pca", action="store_true", help="Disable PCA of features (slower).")
+    parser.add_argument(
+        "--no_multires",
+        action="store_true",
+        help="Disable multi-scale rendering (slower, less long-range texture qualities).",
+    )
+    parser.add_argument(
+        "--passes", type=int, default=5, help="Number of times to loop over each of the 5 layers in VGG-19"
+    )
+    parser.add_argument("--iters", type=int, default=500, help="Total number of iterations to optimize.")
+    parser.add_argument("--seed", type=int, default=None, help="Seed for the random number generator.")
+    parser.add_argument("--output_dir", type=str, default="output/", help="Directory to output results.")
     args = parser.parse_args()
 
     torch.set_grad_enabled(False)
