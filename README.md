@@ -24,7 +24,7 @@ python optex.py --style style/graffiti.jpg --size 512
 
 Supply two images and synthesize one in the style of the other.
 ```bash
-python optex.py -style style/lava-small.jpg -content content/rocket.jpg --content_strength 0.2
+python optex.py --style style/lava-small.jpg --content content/rocket.jpg --content_strength 0.2
 ```
 
 ## Texture mixing
@@ -32,7 +32,7 @@ python optex.py -style style/lava-small.jpg -content content/rocket.jpg --conten
 Blend two textures together.
 
 ```bash
-python optex.py -style style/zebra.jpg style/pattern-small.jpg --mixing_alpha 0.5  
+python optex.py --style style/zebra.jpg style/pattern-small.jpg --mixing_alpha 0.5  
 ```
 
 ## Color transfer
@@ -40,5 +40,5 @@ python optex.py -style style/zebra.jpg style/pattern-small.jpg --mixing_alpha 0.
 Perform style transfer but keep the original colors of the content.
 
 ```bash
-python optex.py -style style/green-paint-large.jpg -content content/city.jpg --style_scale 0.5 --content_strength 0.2 --color_transfer opt --size 1024
+python optex.py --style style/green-paint-large.jpg --content content/city.jpg --style_scale 0.5 --content_strength 0.2 --color_transfer opt --size 1024
 ```
