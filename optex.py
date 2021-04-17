@@ -55,6 +55,7 @@ def optimal_texture(
     style_layers, style_eigvs, content_layers = encode_inputs(styles, content, use_pca=use_pca)
 
     if texture_mixing:
+        assert styles[0].shape == styles[1].shape, "Texture mixing requires both styles to have the same dimensions"
         mixing_mask = torch.ceil(torch.rand(style_layers[1].shape[1:3], device=device) - mixing_alpha)[None, None, ...]
         style_layers = mix_style_layers(style_layers, mixing_mask, mixing_alpha, hist_mode)
 
@@ -156,8 +157,7 @@ def fit_pca(tensor):
     # fit pca
     A = tensor.reshape(-1, tensor.shape[-1]) - tensor.mean()
     _, eigvals, eigvecs = torch.svd(A)
-    total_variance = torch.sum(eigvals)
-    k = np.argmax(np.cumsum([i / total_variance for i in eigvals]) > 0.9)
+    k = (torch.cumsum(eigvals / torch.sum(eigvals), dim=0) > 0.9).max(0).indices.item()
     eigvecs = eigvecs[:, :k]  # the vectors for 90% of variance will be kept
 
     # apply to input
@@ -276,7 +276,7 @@ if __name__ == "__main__":
         type=str,
         choices=["sym", "pca", "chol", "cdf"],
         default="pca",
-        help="Histogram matching strategy. CDF is slower than the others, but uses less memory. Each gives different results.",
+        help="Histogram matching strategy. CDF is slower than the others, but may use less memory. Each gives slightly different results.",
     )
     parser.add_argument(
         "--color_transfer",
