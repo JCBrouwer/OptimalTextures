@@ -5,19 +5,23 @@ import numpy as np
 import torch
 from kornia.color.hls import hls_to_rgb, rgb_to_hls
 from torch.nn.functional import interpolate
+from torch.profiler import ProfilerActivity, profile, schedule, tensorboard_trace_handler
 from tqdm import tqdm
 
 import util
 from histmatch import hist_match
 from vgg import Decoder, Encoder
 
+
 downsample = partial(interpolate, mode="nearest")  # for mixing mask
 upsample = partial(interpolate, mode="bicubic", align_corners=False)  # for output
+to_nchw = lambda x: x.permute(0, 3, 1, 2)
+to_nhwc = lambda x: x.permute(0, 2, 3, 1)
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-torch.backends.cudnn.benchmark = True
 
 
+@torch.inference_mode()
 def optimal_texture(
     style,
     content=None,
@@ -33,11 +37,17 @@ def optimal_texture(
     passes=5,
     iters=500,
     seed=None,
+    cudnn_benchmark=False,
+    allow_tf32=True,
+    memory_format=torch.contiguous_format,
     **kwargs,
 ):
+    torch.backends.cudnn.benchmark = cudnn_benchmark
+    torch.backends.cudnn.allow_tf32 = allow_tf32
+    torch.backends.cuda.matmul.allow_tf32 = allow_tf32
+
     if seed is not None:
         torch.manual_seed(seed)
-        torch.backends.cudnn.deterministic = True
 
     # readability booleans
     use_pca = not no_pca
@@ -52,69 +62,85 @@ def optimal_texture(
     content = util.maybe_load_content(content, size=sizes[0])
     output = torch.rand(content.shape if content is not None else (1, 3, sizes[0], sizes[0]), device=device)
 
+    styles = [s.to(device, memory_format=memory_format) for s in styles]
+    content = content.to(device, memory_format=memory_format) if content is not None else None
+    output = output.to(device, memory_format=memory_format)
+
+    encoder = Encoder().to(device, memory_format=memory_format)
+    decoder = Decoder().to(device, memory_format=memory_format)
+
     # transform style and content to VGG feature space
-    style_layers, style_eigvs, content_layers = encode_inputs(styles, content, use_pca=use_pca)
+    style_layers, style_eigvs, content_layers = encode_inputs(encoder, styles, content, use_pca=use_pca)
 
     if texture_mixing:
         assert styles[0].shape == styles[1].shape, "Texture mixing requires both styles to have the same dimensions"
         mixing_mask = torch.ceil(torch.rand(style_layers[1].shape[1:3], device=device) - mixing_alpha)[None, None, ...]
         style_layers = mix_style_layers(style_layers, mixing_mask, mixing_alpha, hist_mode)
 
-    pbar = tqdm(total=iters, smoothing=0)
-    for p in range(passes):
+    with tqdm(total=iters, smoothing=0) as pbar, profile(
+        activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+        schedule=schedule(skip_first=5, wait=5, warmup=5, active=50),
+        on_trace_ready=tensorboard_trace_handler(dir_name="output/traces/"),
+        profile_memory=True,
+        record_shapes=True,
+        with_stack=True,
+    ) as prof:
+        for p in range(passes):
+            if use_multires and p != 0:
+                # reload style and content at the new size
+                styles = util.load_styles(args.style, size=sizes[p], scale=style_scale, oversize=oversize_style)
+                content = util.maybe_load_content(args.content, size=sizes[p])
+                styles = [s.to(device, memory_format=memory_format) for s in styles]
+                content = content.to(device, memory_format=memory_format) if content is not None else None
 
-        if use_multires and p != 0:
-            # reload style and content at the new size
-            styles = util.load_styles(args.style, size=sizes[p], scale=style_scale, oversize=oversize_style)
-            content = util.maybe_load_content(args.content, size=sizes[p])
+                # upsample to next size
+                output = upsample(output, size=content.shape[2:] if content is not None else (sizes[p], sizes[p]))
 
-            # upsample to next size
-            output = upsample(output, size=content.shape[2:] if content is not None else (sizes[p], sizes[p]))
+                # get style and content target features
+                style_layers, style_eigvs, content_layers = encode_inputs(encoder, styles, content, use_pca=use_pca)
 
-            # get style and content target features
-            style_layers, style_eigvs, content_layers = encode_inputs(styles, content, use_pca=use_pca)
+                if texture_mixing:
+                    style_layers = mix_style_layers(style_layers, mixing_mask, mixing_alpha, hist_mode)
 
-            if texture_mixing:
-                style_layers = mix_style_layers(style_layers, mixing_mask, mixing_alpha, hist_mode)
+            output_layer = encoder(output)  # encode layer to deepest level of VGG feature space
+            output_layer = to_nhwc(output_layer)  # NHWC for easy rotation and PCA projection
 
-        for l in range(5, 0, -1):
-            pbar.set_description(f"Current resolution: {sizes[p if use_multires else 0]}, current layer relu{l}_1")
+            for l in range(4, -1, -1):
+                pbar.set_description(f"Current resolution: {sizes[p if use_multires else 0]}, current layer relu{l}_1")
 
-            # encode layer to VGG feature space
-            with Encoder(l).to(device) as encoder:
-                output_layer = encoder(output)
-            if use_pca:
-                output_layer = output_layer @ style_eigvs[l]  # project onto principal components
+                if use_pca:
+                    output_layer = output_layer @ style_eigvs[l]  # project onto principal components
 
-            for _ in range(iters_per_pass_and_layer[p, l - 1]):
-                output_layer = optimal_transport(output_layer, style_layers[l], hist_mode)
+                for _ in range(iters_per_pass_and_layer[p, l - 1]):
+                    output_layer = optimal_transport(output_layer, style_layers[l], hist_mode)
 
-                # apply content matching step
-                if content is not None and l >= 3:
-                    strength = content_strength
-                    strength /= 2 ** (5 - l)  # 1, 2, or 4 depending on layer depth
-                    output_layer += strength * (content_layers[l] - output_layer)
+                    # apply content matching step
+                    if content is not None and l >= 3:
+                        strength = content_strength
+                        strength /= 2 ** (5 - l)  # 1, 2, or 4 depending on layer depth
+                        output_layer += strength * (content_layers[l] - output_layer)
 
-                pbar.update(1)
+                    pbar.update()
+                    # prof.step()
 
-            if use_pca:
-                output_layer = output_layer @ style_eigvs[l].T  # reverse principal component projection
-            with Decoder(l).to(device) as decoder:
-                output = decoder(output_layer)  # decode back to image space
+                if use_pca:
+                    output_layer = output_layer @ style_eigvs[l].T  # reverse principal component projection
 
-    if color_transfer is not None:
-        target_hls = rgb_to_hls(content)
-        target_hls[:, 1] = rgb_to_hls(output)[:, 1]  # swap lightness channel
-        target = hls_to_rgb(target_hls)
+                output_layer = decoder(output_layer, slice=l)  # decode back to higher feature space
 
-        if color_transfer == "opt":
-            target, output = target.permute(0, 2, 3, 1), output.permute(0, 2, 3, 1)  # [b, h, w, c]
-            for _ in range(3):
-                output = optimal_transport(output, target, "cdf")
-            output = output.permute(0, 3, 1, 2)  # [b, c, h, w]
+        output = to_nchw(output_layer)
 
-        elif color_transfer == "lum":
-            return target  # return output with hue and saturation from content
+        if color_transfer is not None:
+            target_hls = rgb_to_hls(content)
+            target_hls[..., 1] = rgb_to_hls(output)[..., 1]  # swap lightness channel
+            target = hls_to_rgb(target_hls)
+
+            if color_transfer == "opt":
+                for _ in range(3):
+                    output = to_nchw(optimal_transport(to_nhwc(output), to_nhwc(target), "cdf"))
+
+            elif color_transfer == "lum":
+                output = target  # return output with hue and saturation from content
 
     return output
 
@@ -132,24 +158,32 @@ def optimal_transport(output_layer, style_layer, hist_mode):
     return output_layer
 
 
-def encode_inputs(styles, content, use_pca):
-    style_layers, style_eigvs, content_layers = [None], [None], [None]
+def encode_inputs(encoder, styles, content, use_pca):
+    style_layers, style_eigvs, content_layers = [[] for _ in range(5)], [], []
 
-    for l in range(1, 6):
-        with Encoder(l).to(device) as encoder:
-            style_layers.append(torch.cat([encoder(style) for style in styles]))  # encode styles
+    for style in styles:  # encode styles
+        style_layer = style
+        for l in range(5):
+            style_layer = encoder(style_layer, slice=l)
+            style_layers[l].append(to_nhwc(style_layer))
+    style_layers = [torch.cat(layers) for layers in style_layers]
 
-            if use_pca:
-                style_layers[l], eigvecs = fit_pca(style_layers[l])  # PCA
-                style_eigvs.append(eigvecs)
+    if use_pca:
+        for l in range(5):
+            style_layers[l], eigvecs = fit_pca(style_layers[l])  # PCA
+            style_eigvs.append(eigvecs)
 
-            if content is not None:
-                content_layer = encoder(content)
-                if use_pca:  # project into style PC space
-                    content_layer = content_layer @ eigvecs
-                # center features at mean of style features
-                content_layer = content_layer - content_layer.mean() + torch.mean(style_layers[l])
-                content_layers.append(content_layer)
+    if content is not None:
+        content_layer, content_layers = content, []
+        for l in range(5):
+            content_layer = encoder(content_layer, slice=l)
+
+            if use_pca:  # project into style PC space
+                content_layer = content_layer @ style_eigvs[l]
+
+            # center features at mean of style features
+            content_layer = content_layer - content_layer.mean() + torch.mean(style_layers[l])  # TODO channelwise mean?
+            content_layers.append(content_layer)
 
     return style_layers, style_eigvs, content_layers
 
@@ -158,7 +192,7 @@ def fit_pca(tensor):
     # fit pca
     A = tensor.reshape(-1, tensor.shape[-1]) - tensor.mean()
     _, eigvals, eigvecs = torch.svd(A)
-    k = (torch.cumsum(eigvals / torch.sum(eigvals), dim=0) > 0.9).max(0).indices.item()
+    k = (torch.cumsum(eigvals / torch.sum(eigvals), dim=0) > 0.9).max(0).indices.squeeze()
     eigvecs = eigvecs[:, :k]  # the vectors for 90% of variance will be kept
 
     # apply to input
@@ -170,7 +204,7 @@ def fit_pca(tensor):
 def mix_style_layers(style_layers, mixing_mask, mixing_alpha, hist_mode):
     i = mixing_alpha
     for l, sl in enumerate(style_layers[1:]):
-        mix = downsample(mixing_mask, size=sl.shape[1:3]).permute(0, 2, 3, 1)
+        mix = to_nhwc(downsample(mixing_mask, size=sl.shape[1:3]))
 
         A, B = sl[[0]], sl[[1]]
         AtoB = hist_match(A, B, mode=hist_mode)
@@ -182,7 +216,8 @@ def mix_style_layers(style_layers, mixing_mask, mixing_alpha, hist_mode):
     return style_layers
 
 
-def random_rotation(N):
+@torch.jit.script
+def random_rotation(N: int, device: torch.device = device):
     """
     Draws random N-dimensional rotation matrix (det = 1, inverse = transpose) from the special orthogonal group
 
@@ -193,8 +228,8 @@ def random_rotation(N):
     for n in range(N - 1):
         x = torch.randn(N - n, device=device)
         norm2 = x @ x
-        x0 = x[0].item()
-        D[n] = torch.sign(x[0]) if x[0] != 0 else 1
+        x0 = x[0].clone()
+        D[n] = torch.sign(torch.sign(x[0]) + 0.5)
         x[0] += D[n] * torch.sqrt(norm2)
         x /= torch.sqrt((norm2 - x0**2 + x[0] ** 2) / 2.0)
         H[:, n:] -= torch.outer(H[:, n:] @ x, x)
@@ -276,7 +311,7 @@ if __name__ == "__main__":
         "--hist_mode",
         type=str,
         choices=["sym", "pca", "chol", "cdf"],
-        default="pca",
+        default="chol",
         help="Histogram matching strategy. CDF is slower than the others, but may use less memory. Each gives slightly different results.",
     )
     parser.add_argument(
@@ -299,8 +334,6 @@ if __name__ == "__main__":
     parser.add_argument("--seed", type=int, default=None, help="Seed for the random number generator.")
     parser.add_argument("--output_dir", type=str, default="output/", help="Directory to output results.")
     args = parser.parse_args()
-
-    torch.set_grad_enabled(False)
 
     output = optimal_texture(**vars(args))
 

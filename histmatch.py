@@ -3,7 +3,7 @@ import torch
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-def hist_match(target, source, mode="pca", eps=1e-2):
+def hist_match(target, source, mode="chol", eps=1e-2):
     target = target.permute(0, 3, 1, 2)  # -> b, c, h, w
     source = source.permute(0, 3, 1, 2)
 

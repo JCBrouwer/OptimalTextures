@@ -1,9 +1,6 @@
-import torch
-import torchvision
-import torchvision.transforms.functional as transforms
 from PIL import Image
-
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+from torchvision.transforms.functional import to_tensor
+from torchvision.utils import save_image as tv_save_image
 
 
 def load_styles(style_files, size, scale, oversize):
@@ -36,7 +33,7 @@ def load_image(path, size, scale=1, no_quality_loss=True):
 
     img = img.resize((int(size), hsize), Image.ANTIALIAS)
 
-    return transforms.to_tensor(img).unsqueeze(0).to(device)
+    return to_tensor(img).unsqueeze(0)
 
 
 def round32(integer):
@@ -60,7 +57,7 @@ def save_image(output, args):
         outs += [args.color_transfer]
     outs += [str(args.size)]
     outname = "_".join(outs)
-    torchvision.utils.save_image(output, f"{args.output_dir}/{outname}.png")
+    tv_save_image(output, f"{args.output_dir}/{outname}.png")
 
 
 def name(filepath):
