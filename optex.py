@@ -1,14 +1,15 @@
 import argparse
 from functools import partial
 
+import numpy as np
 import torch
+from kornia.color.hls import hls_to_rgb, rgb_to_hls
 from torch.nn.functional import interpolate
 from tqdm import tqdm
 
 import util
-from histmatch import *
+from histmatch import hist_match
 from vgg import Decoder, Encoder
-from kornia.color.hls import rgb_to_hls, hls_to_rgb
 
 downsample = partial(interpolate, mode="nearest")  # for mixing mask
 upsample = partial(interpolate, mode="bicubic", align_corners=False)  # for output
@@ -195,7 +196,7 @@ def random_rotation(N):
         x0 = x[0].item()
         D[n] = torch.sign(x[0]) if x[0] != 0 else 1
         x[0] += D[n] * torch.sqrt(norm2)
-        x /= torch.sqrt((norm2 - x0 ** 2 + x[0] ** 2) / 2.0)
+        x /= torch.sqrt((norm2 - x0**2 + x[0] ** 2) / 2.0)
         H[:, n:] -= torch.outer(H[:, n:] @ x, x)
     D[-1] = (-1) ** (N - 1) * D[:-1].prod()
     H = (D * H.T).T
