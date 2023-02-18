@@ -1,9 +1,13 @@
 from argparse import Namespace
+from typing import Tuple
+
+import numpy as np
 import torch
 import torchvision
 import torchvision.transforms.functional as transforms
 from PIL import Image
 from torch import Tensor
+from torch.nn.functional import interpolate
 
 
 def load_styles(style_files, size, scale, oversize=False, device="cpu", memory_format=torch.contiguous_format):
@@ -61,6 +65,27 @@ def save_image(output: Tensor, args: Namespace):
         )
 
 
+def get_iters_and_sizes(size: int, iters: int, passes: int, use_multires: bool):
+    # more iterations for smaller sizes and deeper layers
+
+    if use_multires:
+        iters_per_pass = np.arange(2 * passes, passes, -1)
+        iters_per_pass = iters_per_pass / np.sum(iters_per_pass) * iters
+
+        sizes = np.linspace(256, size, passes)
+        # round to nearest multiple of 32, so that even after 4 max pools the resolution is an even number
+        sizes = (32 * np.round(sizes / 32)).astype(np.int32)
+    else:
+        iters_per_pass = np.ones(passes) * int(iters / passes)
+        sizes = [size] * passes
+
+    proportion_per_layer = np.array([64, 128, 256, 512, 512]) + 64
+    proportion_per_layer = proportion_per_layer / np.sum(proportion_per_layer)
+    iters = (iters_per_pass[:, None] * proportion_per_layer[None, :]).astype(np.int32)
+
+    return iters.tolist(), sizes.tolist()
+
+
 def name(filepath: str):
     return filepath.split("/")[-1].split(".")[0]
 
@@ -75,3 +100,7 @@ def to_nchw(x: Tensor):
 
 def to_nhwc(x: Tensor):
     return x.permute(0, 2, 3, 1)
+
+
+def resize(x: Tensor, size: Tuple[int, int]):
+    return interpolate(x, size=size, mode="bicubic", align_corners=False, antialias=True)
