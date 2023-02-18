@@ -111,7 +111,7 @@ class OptimalTexture(torch.nn.Module):
                 for _ in range(self.iters_per_pass_and_layer[p][l - 1]):
                     pastiche_feature = optimal_transport(pastiche_feature, style_features[l], self.hist_mode)
 
-                    if len(content_features) > 0 and l >= 2:  # apply content matching step
+                    if len(content_features) > 0 and l <= 2:  # apply content matching step
                         strength = self.content_strength / 2 ** (4 - l)  # 1, 2, or 4 depending on feature depth
                         pastiche_feature += strength * (content_features[l] - pastiche_feature)
 
