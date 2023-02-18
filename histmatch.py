@@ -1,14 +1,15 @@
 import torch
+from torch import Tensor
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+from util import to_nchw, to_nhwc
 
 
-def hist_match(target, source, mode="pca", eps=1e-2):
-    target = target.permute(0, 3, 1, 2)  # -> b, c, h, w
-    source = source.permute(0, 3, 1, 2)
+def hist_match(target: Tensor, source: Tensor, mode: str = "pca", eps: float = 1e-6):
+    target = to_nchw(target)
+    source = to_nchw(source)
+    b, c, h, w = target.shape
 
     if mode == "cdf":
-        b, c, h, w = target.shape
         matched = cdf_match(target.reshape(c, -1), source.reshape(c, -1)).reshape(b, c, h, w)
 
     else:
@@ -16,11 +17,11 @@ def hist_match(target, source, mode="pca", eps=1e-2):
 
         mu_t = target.mean((2, 3), keepdim=True)
         hist_t = (target - mu_t).view(target.size(1), -1)  # [c, b * h * w]
-        cov_t = hist_t @ hist_t.T / hist_t.shape[1] + eps * torch.eye(hist_t.shape[0], device=device)
+        cov_t = hist_t @ hist_t.T / hist_t.shape[1] + eps * torch.eye(hist_t.shape[0], device=target.device)
 
         mu_s = source.mean((2, 3), keepdim=True)
         hist_s = (source - mu_s).view(source.size(1), -1)
-        cov_s = hist_s @ hist_s.T / hist_s.shape[1] + eps * torch.eye(hist_s.shape[0], device=device)
+        cov_s = hist_s @ hist_s.T / hist_s.shape[1] + eps * torch.eye(hist_s.shape[0], device=target.device)
 
         if mode == "chol":
             chol_t = torch.linalg.cholesky(cov_t)
@@ -34,7 +35,7 @@ def hist_match(target, source, mode="pca", eps=1e-2):
             Qs = eve_s @ torch.sqrt(torch.diag(eva_s)) @ eve_s.T
             matched = Qs @ torch.inverse(Qt) @ hist_t
 
-        elif mode == "sym":
+        else:  # mode == "sym"
             eva_t, eve_t = torch.linalg.eigh(cov_t, UPLO="U")
             Qt = eve_t @ torch.sqrt(torch.diag(eva_t)) @ eve_t.T
             Qt_Cs_Qt = Qt @ cov_s @ Qt
@@ -42,12 +43,12 @@ def hist_match(target, source, mode="pca", eps=1e-2):
             QtCsQt = eve_QtCsQt @ torch.sqrt(torch.diag(eva_QtCsQt)) @ eve_QtCsQt.T
             matched = torch.inverse(Qt) @ QtCsQt @ torch.inverse(Qt) @ hist_t
 
-        matched = matched.view(*target.shape) + mu_s
+        matched = matched.view(b, c, h, w) + mu_s
 
-    return matched.permute(0, 2, 3, 1)  # -> b, h, w, c
+    return to_nhwc(matched)
 
 
-def cdf_match(target, source, bins=256):
+def cdf_match(target: Tensor, source: Tensor, bins: int = 256):
     matched = torch.empty_like(target)
     for i, (target_channel, source_channel) in enumerate(zip(target.contiguous(), source)):
         lo = torch.min(target_channel.min(), source_channel.min())
@@ -57,7 +58,7 @@ def cdf_match(target, source, bins=256):
         # https://github.com/numpy/numpy/blob/v1.20.0/numpy/lib/histograms.py#L678
         target_hist = torch.histc(target_channel, bins, lo, hi)
         source_hist = torch.histc(source_channel, bins, lo, hi)
-        bin_edges = torch.linspace(lo, hi, bins + 1, device=device)[1:]
+        bin_edges = torch.linspace(lo, hi, bins + 1, device=target.device)[1:]
 
         target_cdf = target_hist.cumsum(0)
         target_cdf = target_cdf / target_cdf[-1]
@@ -70,7 +71,7 @@ def cdf_match(target, source, bins=256):
     return matched
 
 
-def interp(x, xp, fp):
+def interp(x: Tensor, xp: Tensor, fp: Tensor):
     # based on https://github.com/numpy/numpy/blob/main/numpy/core/src/multiarray/compiled_base.c#L489
 
     f = torch.zeros_like(x)

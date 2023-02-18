@@ -4,20 +4,19 @@ from functools import partial
 import numpy as np
 import torch
 from kornia.color.hls import hls_to_rgb, rgb_to_hls
+from torch import Tensor
 from torch.nn.functional import interpolate
 from tqdm import tqdm
 
-import util
 from histmatch import hist_match
+from util import load_styles, maybe_load_content, round32, save_image, to_nchw, to_nhwc
 from vgg import Decoder, Encoder
 
 downsample = partial(interpolate, mode="nearest")  # for mixing mask
 upsample = partial(interpolate, mode="bicubic", align_corners=False)  # for output
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-torch.backends.cudnn.benchmark = True
 
-
+@torch.inference_mode()
 def optimal_texture(
     style,
     content=None,
@@ -33,11 +32,18 @@ def optimal_texture(
     passes=5,
     iters=500,
     seed=None,
+    cudnn_benchmark=False,
+    allow_tf32=True,
+    mem_fmt=torch.contiguous_format,
+    device=torch.device("cuda" if torch.cuda.is_available() else "cpu"),
     **kwargs,
 ):
+    torch.backends.cudnn.benchmark = cudnn_benchmark
+    torch.backends.cudnn.allow_tf32 = allow_tf32
+    torch.backends.cuda.matmul.allow_tf32 = allow_tf32
+
     if seed is not None:
         torch.manual_seed(seed)
-        torch.backends.cudnn.deterministic = True
 
     # readability booleans
     use_pca = not no_pca
@@ -48,12 +54,16 @@ def optimal_texture(
     iters_per_pass_and_layer, sizes = get_iters_and_sizes(size, iters, passes, use_multires)
 
     # load inputs and initialize output image
-    styles = util.load_styles(style, size=sizes[0], scale=style_scale, oversize=oversize_style)
-    content = util.maybe_load_content(content, size=sizes[0])
+    styles = load_styles(
+        style, size=sizes[0], scale=style_scale, oversize=oversize_style, device=device, memory_format=mem_fmt
+    )
+    content = maybe_load_content(content, size=sizes[0], device=device, memory_format=mem_fmt)
     output = torch.rand(content.shape if content is not None else (1, 3, sizes[0], sizes[0]), device=device)
 
     # transform style and content to VGG feature space
-    style_layers, style_eigvs, content_layers = encode_inputs(styles, content, use_pca=use_pca)
+    style_layers, style_eigvs, content_layers = encode_inputs(
+        styles, content, use_pca=use_pca, device=device, memory_format=mem_fmt
+    )
 
     if texture_mixing:
         assert styles[0].shape == styles[1].shape, "Texture mixing requires both styles to have the same dimensions"
@@ -62,17 +72,25 @@ def optimal_texture(
 
     pbar = tqdm(total=iters, smoothing=0)
     for p in range(passes):
-
         if use_multires and p != 0:
             # reload style and content at the new size
-            styles = util.load_styles(args.style, size=sizes[p], scale=style_scale, oversize=oversize_style)
-            content = util.maybe_load_content(args.content, size=sizes[p])
+            styles = load_styles(
+                args.style,
+                size=sizes[p],
+                scale=style_scale,
+                oversize=oversize_style,
+                device=device,
+                memory_format=mem_fmt,
+            )
+            content = maybe_load_content(args.content, size=sizes[p], device=device, memory_format=mem_fmt)
 
             # upsample to next size
             output = upsample(output, size=content.shape[2:] if content is not None else (sizes[p], sizes[p]))
 
             # get style and content target features
-            style_layers, style_eigvs, content_layers = encode_inputs(styles, content, use_pca=use_pca)
+            style_layers, style_eigvs, content_layers = encode_inputs(
+                styles, content, use_pca=use_pca, device=device, memory_format=mem_fmt
+            )
 
             if texture_mixing:
                 style_layers = mix_style_layers(style_layers, mixing_mask, mixing_alpha, hist_mode)
@@ -81,7 +99,7 @@ def optimal_texture(
             pbar.set_description(f"Current resolution: {sizes[p if use_multires else 0]}, current layer relu{l}_1")
 
             # encode layer to VGG feature space
-            with Encoder(l).to(device) as encoder:
+            with Encoder(l).to(device=device, memory_format=mem_fmt) as encoder:
                 output_layer = encoder(output)
             if use_pca:
                 output_layer = output_layer @ style_eigvs[l]  # project onto principal components
@@ -99,7 +117,7 @@ def optimal_texture(
 
             if use_pca:
                 output_layer = output_layer @ style_eigvs[l].T  # reverse principal component projection
-            with Decoder(l).to(device) as decoder:
+            with Decoder(l).to(device=device, memory_format=mem_fmt) as decoder:
                 output = decoder(output_layer)  # decode back to image space
 
     if color_transfer is not None:
@@ -108,10 +126,10 @@ def optimal_texture(
         target = hls_to_rgb(target_hls)
 
         if color_transfer == "opt":
-            target, output = target.permute(0, 2, 3, 1), output.permute(0, 2, 3, 1)  # [b, h, w, c]
+            target, output = to_nhwc(target), to_nhwc(output)  # [b, h, w, c]
             for _ in range(3):
                 output = optimal_transport(output, target, "cdf")
-            output = output.permute(0, 3, 1, 2)  # [b, c, h, w]
+            output = to_nchw(output)
 
         elif color_transfer == "lum":
             return target  # return output with hue and saturation from content
@@ -119,8 +137,31 @@ def optimal_texture(
     return output
 
 
-def optimal_transport(output_layer, style_layer, hist_mode):
-    rotation = random_rotation(output_layer.shape[-1])
+@torch.jit.script
+def random_rotation(N: int, device: torch.device):
+    """
+    Draws random N-dimensional rotation matrix (det = 1, inverse = transpose) from the special orthogonal group
+
+    From https://github.com/scipy/scipy/blob/5ab7426247900db9de856e790b8bea1bd71aec49/scipy/stats/_multivariate.py#L3309
+    """
+    H = torch.eye(N, device=device)
+    D = torch.empty((N,), device=device)
+    for n in range(N - 1):
+        x = torch.randn(N - n, device=device)
+        norm2 = x @ x
+        x0 = x[0].clone()
+        D[n] = torch.sign(torch.sign(x[0]) + 0.5)
+        x[0] += D[n] * torch.sqrt(norm2)
+        x /= torch.sqrt((norm2 - x0**2 + x[0] ** 2) / 2.0)
+        H[:, n:] -= torch.outer(H[:, n:] @ x, x)
+    D[-1] = (-1) ** (N - 1) * D[:-1].prod()
+    H = (D * H.T).T
+    return H
+
+
+@torch.jit.script
+def optimal_transport(output_layer: Tensor, style_layer: Tensor, hist_mode: str):
+    rotation = random_rotation(output_layer.shape[-1], output_layer.device)
 
     rotated_output = output_layer @ rotation
     rotated_style = style_layer @ rotation
@@ -132,11 +173,11 @@ def optimal_transport(output_layer, style_layer, hist_mode):
     return output_layer
 
 
-def encode_inputs(styles, content, use_pca):
+def encode_inputs(styles, content, use_pca, device, memory_format):
     style_layers, style_eigvs, content_layers = [None], [None], [None]
 
     for l in range(1, 6):
-        with Encoder(l).to(device) as encoder:
+        with Encoder(l).to(device=device, memory_format=memory_format) as encoder:
             style_layers.append(torch.cat([encoder(style) for style in styles]))  # encode styles
 
             if use_pca:
@@ -158,7 +199,7 @@ def fit_pca(tensor):
     # fit pca
     A = tensor.reshape(-1, tensor.shape[-1]) - tensor.mean()
     _, eigvals, eigvecs = torch.svd(A)
-    k = (torch.cumsum(eigvals / torch.sum(eigvals), dim=0) > 0.9).max(0).indices.item()
+    k = (torch.cumsum(eigvals / torch.sum(eigvals), dim=0) > 0.9).max(0).indices.squeeze()
     eigvecs = eigvecs[:, :k]  # the vectors for 90% of variance will be kept
 
     # apply to input
@@ -170,7 +211,7 @@ def fit_pca(tensor):
 def mix_style_layers(style_layers, mixing_mask, mixing_alpha, hist_mode):
     i = mixing_alpha
     for l, sl in enumerate(style_layers[1:]):
-        mix = downsample(mixing_mask, size=sl.shape[1:3]).permute(0, 2, 3, 1)
+        mix = to_nhwc(downsample(mixing_mask, size=sl.shape[1:3]))
 
         A, B = sl[[0]], sl[[1]]
         AtoB = hist_match(A, B, mode=hist_mode)
@@ -182,27 +223,6 @@ def mix_style_layers(style_layers, mixing_mask, mixing_alpha, hist_mode):
     return style_layers
 
 
-def random_rotation(N):
-    """
-    Draws random N-dimensional rotation matrix (det = 1, inverse = transpose) from the special orthogonal group
-
-    From https://github.com/scipy/scipy/blob/5ab7426247900db9de856e790b8bea1bd71aec49/scipy/stats/_multivariate.py#L3309
-    """
-    H = torch.eye(N, device=device)
-    D = torch.empty((N,), device=device)
-    for n in range(N - 1):
-        x = torch.randn(N - n, device=device)
-        norm2 = x @ x
-        x0 = x[0].item()
-        D[n] = torch.sign(x[0]) if x[0] != 0 else 1
-        x[0] += D[n] * torch.sqrt(norm2)
-        x /= torch.sqrt((norm2 - x0**2 + x[0] ** 2) / 2.0)
-        H[:, n:] -= torch.outer(H[:, n:] @ x, x)
-    D[-1] = (-1) ** (N - 1) * D[:-1].prod()
-    H = (D * H.T).T
-    return H
-
-
 def get_iters_and_sizes(size, iters, passes, use_multires):
     # more iterations for smaller sizes and deeper layers
 
@@ -212,7 +232,7 @@ def get_iters_and_sizes(size, iters, passes, use_multires):
 
         sizes = np.linspace(256, size, passes)
         # round to nearest multiple of 32, so that even after 4 max pools the resolution is an even number
-        sizes = [util.round32(size) for size in sizes]
+        sizes = [round32(size) for size in sizes]
     else:
         iters_per_pass = np.ones(passes) * int(iters / passes)
         sizes = [size] * passes
@@ -276,7 +296,7 @@ if __name__ == "__main__":
         "--hist_mode",
         type=str,
         choices=["sym", "pca", "chol", "cdf"],
-        default="pca",
+        default="chol",
         help="Histogram matching strategy. CDF is slower than the others, but may use less memory. Each gives slightly different results.",
     )
     parser.add_argument(
@@ -300,8 +320,6 @@ if __name__ == "__main__":
     parser.add_argument("--output_dir", type=str, default="output/", help="Directory to output results.")
     args = parser.parse_args()
 
-    torch.set_grad_enabled(False)
-
     output = optimal_texture(**vars(args))
 
-    util.save_image(output, args)
+    save_image(output, args)
