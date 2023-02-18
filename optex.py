@@ -1,143 +1,124 @@
 import argparse
 from functools import partial
 
-import numpy as np
 import torch
 from kornia.color.hls import hls_to_rgb, rgb_to_hls
 from torch import Tensor
 from torch.nn.functional import interpolate
-from tqdm import tqdm
 
 from histmatch import hist_match
-from util import load_styles, maybe_load_content, round32, save_image, to_nchw, to_nhwc
+from util import load_styles, maybe_load_content, round32, save_image, to_nchw, to_nhwc, get_size
 from vgg import Decoder, Encoder
+from typing import List, Optional
 
 downsample = partial(interpolate, mode="nearest")  # for mixing mask
-upsample = partial(interpolate, mode="bicubic", align_corners=False)  # for output
+resize = partial(interpolate, mode="bicubic", align_corners=False, antialias=True)
 
 
-@torch.inference_mode()
-def optimal_texture(
-    style,
-    content=None,
-    size=512,
-    content_strength=0.1,
-    mixing_alpha=0.5,
-    style_scale=1,
-    oversize_style=False,
-    hist_mode="pca",
-    color_transfer=None,
-    no_pca=False,
-    no_multires=False,
-    passes=5,
-    iters=500,
-    seed=None,
-    cudnn_benchmark=False,
-    allow_tf32=True,
-    mem_fmt=torch.contiguous_format,
-    device=torch.device("cuda" if torch.cuda.is_available() else "cpu"),
-    **kwargs,
-):
-    torch.backends.cudnn.benchmark = cudnn_benchmark
-    torch.backends.cudnn.allow_tf32 = allow_tf32
-    torch.backends.cuda.matmul.allow_tf32 = allow_tf32
+class OptimalTexture(torch.nn.Module):
+    def __init__(
+        self,
+        size: int = 512,
+        iters: int = 500,
+        passes: int = 5,
+        hist_mode: str = "chol",
+        color_transfer: Optional[str] = None,
+        content_strength: float = 0.1,
+        style_scale: float = 1,
+        mixing_alpha: float = 0.5,
+        no_pca: bool = False,
+        no_multires: bool = False,
+    ):
+        super().__init__()
 
-    if seed is not None:
-        torch.manual_seed(seed)
+        self.hist_mode = hist_mode
+        self.color_transfer = color_transfer
+        self.content_strength = content_strength
+        self.style_scale = style_scale
+        self.mixing_alpha = mixing_alpha
+        self.use_pca = not no_pca
+        self.use_multires = not no_multires
 
-    # readability booleans
-    use_pca = not no_pca
-    use_multires = not no_multires
-    texture_mixing = len(style) > 1
+        # get number of iterations and sizes for optization
+        self.passes = passes
+        self.iters_per_pass_and_layer, self.sizes = get_iters_and_sizes(size, iters, passes, self.use_multires)
 
-    # get number of iterations and sizes for optization
-    iters_per_pass_and_layer, sizes = get_iters_and_sizes(size, iters, passes, use_multires)
+        self.encoders = torch.nn.ModuleList([Encoder(l) for l in range(1, 6)])
+        self.decoders = torch.nn.ModuleList([Decoder(l) for l in range(1, 6)])
 
-    # load inputs and initialize output image
-    styles = load_styles(
-        style, size=sizes[0], scale=style_scale, oversize=oversize_style, device=device, memory_format=mem_fmt
-    )
-    content = maybe_load_content(content, size=sizes[0], device=device, memory_format=mem_fmt)
-    output = torch.rand(content.shape if content is not None else (1, 3, sizes[0], sizes[0]), device=device)
+    def forward(
+        self,
+        pastiche: Tensor,
+        styles: List[Tensor],
+        content: Optional[Tensor] = None,
+        verbose: bool = False,
+    ):
+        for p in range(self.passes):
+            if verbose:
+                print(f"Pass {p}, size {self.sizes[p]}")
 
-    # transform style and content to VGG feature space
-    style_layers, style_eigvs, content_layers = encode_inputs(
-        styles, content, use_pca=use_pca, device=device, memory_format=mem_fmt
-    )
+            if self.use_multires:
+                style_tens = [
+                    resize(s, size=get_size(self.sizes[p], self.style_scale, s.shape[2], s.shape[3])) for s in styles
+                ]
+                if content is not None:
+                    cont_size = get_size(self.sizes[p], 1.0, content.shape[2], content.shape[3], oversize=True)
+                    cont_tens = resize(content, size=cont_size)
+                else:
+                    cont_tens = None
+                pastiche = resize(
+                    pastiche, size=content.shape[2:] if content is not None else (self.sizes[p], self.sizes[p])
+                )
 
-    if texture_mixing:
-        assert styles[0].shape == styles[1].shape, "Texture mixing requires both styles to have the same dimensions"
-        mixing_mask = torch.ceil(torch.rand(style_layers[1].shape[1:3], device=device) - mixing_alpha)[None, None, ...]
-        style_layers = mix_style_layers(style_layers, mixing_mask, mixing_alpha, hist_mode)
+                # get style and content target features
+                style_features, style_eigvs, content_features = encode_inputs(
+                    self.encoders, style_tens, cont_tens, use_pca=self.use_pca
+                )
 
-    pbar = tqdm(total=iters, smoothing=0)
-    for p in range(passes):
-        if use_multires and p != 0:
-            # reload style and content at the new size
-            styles = load_styles(
-                args.style,
-                size=sizes[p],
-                scale=style_scale,
-                oversize=oversize_style,
-                device=device,
-                memory_format=mem_fmt,
-            )
-            content = maybe_load_content(args.content, size=sizes[p], device=device, memory_format=mem_fmt)
+                if len(styles) > 1:
+                    mixing_mask = torch.ceil(
+                        torch.rand(style_features[1].shape[1:3], device=pastiche.device) - self.mixing_alpha
+                    )[None, None, ...]
+                    style_features = mix_style_features(style_features, mixing_mask, self.mixing_alpha, self.hist_mode)
 
-            # upsample to next size
-            output = upsample(output, size=content.shape[2:] if content is not None else (sizes[p], sizes[p]))
+            for l in range(4, -1, -1):
+                if verbose:
+                    print(f"Layer: relu{l + 1}_1")
 
-            # get style and content target features
-            style_layers, style_eigvs, content_layers = encode_inputs(
-                styles, content, use_pca=use_pca, device=device, memory_format=mem_fmt
-            )
+                pastiche_feature = self.encoders[l](pastiche)  # encode layer to VGG feature space
 
-            if texture_mixing:
-                style_layers = mix_style_layers(style_layers, mixing_mask, mixing_alpha, hist_mode)
+                if self.use_pca:
+                    pastiche_feature = pastiche_feature @ style_eigvs[l]  # project onto principal components
 
-        for l in range(5, 0, -1):
-            pbar.set_description(f"Current resolution: {sizes[p if use_multires else 0]}, current layer relu{l}_1")
+                for _ in range(self.iters_per_pass_and_layer[p, l - 1]):
+                    pastiche_feature = optimal_transport(pastiche_feature, style_features[l], self.hist_mode)
 
-            # encode layer to VGG feature space
-            with Encoder(l).to(device=device, memory_format=mem_fmt) as encoder:
-                output_layer = encoder(output)
-            if use_pca:
-                output_layer = output_layer @ style_eigvs[l]  # project onto principal components
+                    if len(content_features) > 0 and l >= 2:  # apply content matching step
+                        strength = self.content_strength / 2 ** (4 - l)  # 1, 2, or 4 depending on feature depth
+                        pastiche_feature += strength * (content_features[l] - pastiche_feature)
 
-            for _ in range(iters_per_pass_and_layer[p, l - 1]):
-                output_layer = optimal_transport(output_layer, style_layers[l], hist_mode)
+                if self.use_pca:
+                    pastiche_feature = pastiche_feature @ style_eigvs[l].T  # reverse principal component projection
 
-                # apply content matching step
-                if content is not None and l >= 3:
-                    strength = content_strength
-                    strength /= 2 ** (5 - l)  # 1, 2, or 4 depending on layer depth
-                    output_layer += strength * (content_layers[l] - output_layer)
+                pastiche = self.decoders[l](pastiche_feature)  # decode back to image space
 
-                pbar.update(1)
+        if self.color_transfer is not None:
+            target_hls = rgb_to_hls(content)
+            target_hls[:, 1] = rgb_to_hls(pastiche)[:, 1]  # swap lightness channel
+            target = hls_to_rgb(target_hls)
 
-            if use_pca:
-                output_layer = output_layer @ style_eigvs[l].T  # reverse principal component projection
-            with Decoder(l).to(device=device, memory_format=mem_fmt) as decoder:
-                output = decoder(output_layer)  # decode back to image space
+            if self.color_transfer == "opt":
+                pastiche, target = to_nhwc(pastiche), to_nhwc(target)
+                for _ in range(3):
+                    pastiche = optimal_transport(pastiche, target, "cdf")
+                pastiche = to_nchw(pastiche)
 
-    if color_transfer is not None:
-        target_hls = rgb_to_hls(content)
-        target_hls[:, 1] = rgb_to_hls(output)[:, 1]  # swap lightness channel
-        target = hls_to_rgb(target_hls)
+            elif self.color_transfer == "lum":
+                pastiche = target  # return pastiche with hue and saturation from content
 
-        if color_transfer == "opt":
-            target, output = to_nhwc(target), to_nhwc(output)  # [b, h, w, c]
-            for _ in range(3):
-                output = optimal_transport(output, target, "cdf")
-            output = to_nchw(output)
-
-        elif color_transfer == "lum":
-            return target  # return output with hue and saturation from content
-
-    return output
+        return pastiche
 
 
-@torch.jit.script
 def random_rotation(N: int, device: torch.device):
     """
     Draws random N-dimensional rotation matrix (det = 1, inverse = transpose) from the special orthogonal group
@@ -159,40 +140,38 @@ def random_rotation(N: int, device: torch.device):
     return H
 
 
-@torch.jit.script
-def optimal_transport(output_layer: Tensor, style_layer: Tensor, hist_mode: str):
-    rotation = random_rotation(output_layer.shape[-1], output_layer.device)
+def optimal_transport(pastiche_feature: Tensor, style_feature: Tensor, hist_mode: str):
+    rotation = random_rotation(pastiche_feature.shape[-1], pastiche_feature.device)
 
-    rotated_output = output_layer @ rotation
-    rotated_style = style_layer @ rotation
+    rotated_pastiche = pastiche_feature @ rotation
+    rotated_style = style_feature @ rotation
 
-    matched_output = hist_match(rotated_output, rotated_style, mode=hist_mode)
+    matched_pastiche = hist_match(rotated_pastiche, rotated_style, mode=hist_mode)
 
-    output_layer = matched_output @ rotation.T  # rotate back to normal
+    pastiche_feature = matched_pastiche @ rotation.T  # rotate back to normal
 
-    return output_layer
+    return pastiche_feature
 
 
-def encode_inputs(styles, content, use_pca, device, memory_format):
-    style_layers, style_eigvs, content_layers = [None], [None], [None]
+def encode_inputs(encoders, styles, content, use_pca):
+    style_features, style_eigvs, content_features = [], [], []
 
-    for l in range(1, 6):
-        with Encoder(l).to(device=device, memory_format=memory_format) as encoder:
-            style_layers.append(torch.cat([encoder(style) for style in styles]))  # encode styles
+    for l in range(5):
+        style_features.append(torch.cat([encoders[l](style) for style in styles]))  # encode styles
 
-            if use_pca:
-                style_layers[l], eigvecs = fit_pca(style_layers[l])  # PCA
-                style_eigvs.append(eigvecs)
+        if use_pca:
+            style_features[l], eigvecs = fit_pca(style_features[l])  # PCA
+            style_eigvs.append(eigvecs)
 
-            if content is not None:
-                content_layer = encoder(content)
-                if use_pca:  # project into style PC space
-                    content_layer = content_layer @ eigvecs
-                # center features at mean of style features
-                content_layer = content_layer - content_layer.mean() + torch.mean(style_layers[l])
-                content_layers.append(content_layer)
+        if content is not None:
+            content_feature = encoders[l](content)
+            if use_pca:  # project into style PC space
+                content_feature = content_feature @ eigvecs
+            # center features at mean of style features
+            content_feature = content_feature - content_feature.mean() + torch.mean(style_features[l])
+            content_features.append(content_feature)
 
-    return style_layers, style_eigvs, content_layers
+    return style_features, style_eigvs, content_features
 
 
 def fit_pca(tensor):
@@ -208,9 +187,9 @@ def fit_pca(tensor):
     return features, eigvecs
 
 
-def mix_style_layers(style_layers, mixing_mask, mixing_alpha, hist_mode):
+def mix_style_features(style_features, mixing_mask, mixing_alpha, hist_mode):
     i = mixing_alpha
-    for l, sl in enumerate(style_layers[1:]):
+    for l, sl in enumerate(style_features):
         mix = to_nhwc(downsample(mixing_mask, size=sl.shape[1:3]))
 
         A, B = sl[[0]], sl[[1]]
@@ -219,27 +198,27 @@ def mix_style_layers(style_layers, mixing_mask, mixing_alpha, hist_mode):
 
         style_target = (A * (1 - i) + AtoB * i) * mix + (BtoA * (1 - i) + B * i) * (1 - mix)
 
-        style_layers[l + 1] = style_target
-    return style_layers
+        style_features[l] = style_target
+    return style_features
 
 
 def get_iters_and_sizes(size, iters, passes, use_multires):
     # more iterations for smaller sizes and deeper layers
 
     if use_multires:
-        iters_per_pass = np.arange(2 * passes, passes, -1)
-        iters_per_pass = iters_per_pass / np.sum(iters_per_pass) * iters
+        iters_per_pass = torch.arange(2 * passes, passes, -1)
+        iters_per_pass = iters_per_pass / torch.sum(iters_per_pass) * iters
 
-        sizes = np.linspace(256, size, passes)
+        sizes = torch.linspace(256, size, passes)
         # round to nearest multiple of 32, so that even after 4 max pools the resolution is an even number
         sizes = [round32(size) for size in sizes]
     else:
-        iters_per_pass = np.ones(passes) * int(iters / passes)
+        iters_per_pass = torch.ones(passes) * int(iters / passes)
         sizes = [size] * passes
 
-    proportion_per_layer = np.array([64, 128, 256, 512, 512]) + 64
-    proportion_per_layer = proportion_per_layer / np.sum(proportion_per_layer)
-    iters = (iters_per_pass[:, None] * proportion_per_layer[None, :]).astype(np.int32)
+    proportion_per_layer = torch.tensor([64, 128, 256, 512, 512]) + 64
+    proportion_per_layer = proportion_per_layer / torch.sum(proportion_per_layer)
+    iters = (iters_per_pass[:, None] * proportion_per_layer[None, :]).long()
 
     return iters, sizes
 
@@ -256,70 +235,73 @@ if __name__ == "__main__":
 
         return RequiredLength
 
+    # fmt: off
     parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "-s",
-        "--style",
-        type=str,
-        nargs="+",
-        action=required_length(1, 2),
-        default=["style/graffiti.jpg"],
-        help="Example(s) of the style your texture should take",
-    )
-    parser.add_argument(
-        "-c", "--content", type=str, default=None, help="The structure/shape you want your image to take"
-    )
-    parser.add_argument(
-        "--size", type=int, default=512, help="The output size of the image (larger output = more memory/time required)"
-    )
-    parser.add_argument(
-        "--style_scale",
-        type=float,
-        default=1,
-        help="Scale the style relative to the generated image. Will affect the scale of details generated.",
-    )
-    parser.add_argument(
-        "--oversize_style",
-        action="store_true",
-        help="Allow scaling of style larger than its original size. Might cause blurry outputs.",
-    )
-    parser.add_argument(
-        "--content_strength",
-        type=float,
-        default=0.01,
-        help="Strength with which to focus on the structure in your content image.",
-    )
-    parser.add_argument(
-        "--mixing_alpha", type=float, default=0.5, help="Value between 0 and 1 for interpolation between 2 textures"
-    )
-    parser.add_argument(
-        "--hist_mode",
-        type=str,
-        choices=["sym", "pca", "chol", "cdf"],
-        default="chol",
-        help="Histogram matching strategy. CDF is slower than the others, but may use less memory. Each gives slightly different results.",
-    )
-    parser.add_argument(
-        "--color_transfer",
-        type=str,
-        default=None,
-        choices=["lum", "opt"],
-        help="Strategy to employ to keep original color of content image.",
-    )
-    parser.add_argument("--no_pca", action="store_true", help="Disable PCA of features (slower).")
-    parser.add_argument(
-        "--no_multires",
-        action="store_true",
-        help="Disable multi-scale rendering (slower, less long-range texture qualities).",
-    )
-    parser.add_argument(
-        "--passes", type=int, default=5, help="Number of times to loop over each of the 5 layers in VGG-19"
-    )
+    parser.add_argument("-s", "--style", type=str, nargs="+", action=required_length(1, 2), default=["style/graffiti.jpg"], help="Example(s) of the style your texture should take")
+    parser.add_argument("-c", "--content", type=str, default=None, help="The structure/shape you want your image to take")
+    parser.add_argument("--batch", type=int, default=1, help="Batch size of images to generate")
+    parser.add_argument("--size", type=int, default=512, help="The output size of the image (larger output = more memory/time required)")
+    parser.add_argument("--passes", type=int, default=5, help="Number of times to loop over each of the 5 layers in VGG-19")
     parser.add_argument("--iters", type=int, default=500, help="Total number of iterations to optimize.")
+    parser.add_argument("--hist_mode", type=str, choices=["sym", "pca", "chol", "cdf"], default="chol", help="Histogram matching strategy. CDF is slower than the others, but may use less memory. Each gives slightly different results.")
+    parser.add_argument("--color_transfer", type=str, default=None, choices=["lum", "opt"], help="Strategy to employ to keep original color of content image.")
+    parser.add_argument("--content_strength", type=float, default=0.01, help="Strength with which to focus on the structure in your content image.")
+    parser.add_argument("--style_scale", type=float, default=1.0, help="Scale the style relative to the generated image. Will affect the scale of details generated.")
+    parser.add_argument("--mixing_alpha", type=float, default=0.5, help="Value between 0 and 1 for interpolation between 2 textures")
+    parser.add_argument("--no_pca", action="store_true", help="Disable PCA of features (slower).")
+    parser.add_argument("--no_multires", action="store_true", help="Disable multi-scale rendering (slower, less long-range texture qualities).")
     parser.add_argument("--seed", type=int, default=None, help="Seed for the random number generator.")
+    parser.add_argument("--no_tf32", action="store_true", help="Disable tf32 format (probably slower).")
+    parser.add_argument("--cudnn_benchmark", action="store_true", help="Enable CUDNN benchmarking (probably slower unless doing a lot of iterations).")
+    parser.add_argument("--compile", action="store_true", help="Use PyTorch 2.0 compile function to optimize the model.")
+    parser.add_argument("--script", action="store_true", help="Use PyTorch JIT script function to optimize the model.")
+    parser.add_argument("--device", type=str, default="cuda:0", help="Which device to run on.")
+    parser.add_argument("--memory_format", type=str, default="contiguous", choices=["contiguous", "channels_last"], help="Which memory format to use for optimization.")
     parser.add_argument("--output_dir", type=str, default="output/", help="Directory to output results.")
     args = parser.parse_args()
+    # fmt: on
 
-    output = optimal_texture(**vars(args))
+    torch.backends.cudnn.benchmark = args.cudnn_benchmark
+    torch.backends.cudnn.allow_tf32 = not args.no_tf32
+    torch.backends.cuda.matmul.allow_tf32 = not args.no_tf32
+    memory_format = torch.contiguous_format if args.memory_format == "contiguous" else torch.channels_last
 
-    save_image(output, args)
+    if args.seed is not None:
+        torch.manual_seed(args.seed)
+
+    with torch.inference_mode():
+        styles = load_styles(
+            args.style, size=args.size, scale=args.style_scale, device=args.device, memory_format=memory_format
+        )
+        if len(styles) > 1:
+            assert styles[0].shape == styles[1].shape, "Style images must have the same shape"
+        content = maybe_load_content(args.content, size=args.size, device=args.device, memory_format=memory_format)
+        pastiche = torch.rand(
+            content.shape if content is not None else (args.batch, 3, args.size, args.size), device=args.device
+        )
+
+        texturizer = OptimalTexture(
+            args.size,
+            args.iters,
+            args.passes,
+            args.hist_mode,
+            args.color_transfer,
+            args.content_strength,
+            args.style_scale,
+            args.mixing_alpha,
+            args.no_pca,
+            args.no_multires,
+        ).to(pastiche)
+
+        if args.compile:
+            texturizer = torch.compile(texturizer)
+        if args.script:
+            texturizer = torch.jit.script(texturizer)
+
+        from time import time
+
+        t = time()
+        pastiche = texturizer.forward(pastiche, styles, content, verbose=True)
+        print("Took:", time() - t)
+
+    save_image(pastiche, args)

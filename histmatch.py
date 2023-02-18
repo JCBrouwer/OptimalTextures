@@ -1,26 +1,24 @@
 import torch
 from torch import Tensor
 
-from util import to_nchw, to_nhwc
-
 
 def hist_match(target: Tensor, source: Tensor, mode: str = "pca", eps: float = 1e-6):
-    target = to_nchw(target)
-    source = to_nchw(source)
-    b, c, h, w = target.shape
+    target = target.permute(3, 0, 1, 2)
+    source = source.permute(3, 0, 1, 2)
+    c, b, h, w = target.shape
 
     if mode == "cdf":
-        matched = cdf_match(target.reshape(c, -1), source.reshape(c, -1)).reshape(b, c, h, w)
+        matched = cdf_match(target.view(c, -1), source.view(c, -1)).view(c, b, h, w)
 
     else:
         # based on https://github.com/ProGamerGov/Neural-Tools/blob/master/linear-color-transfer.py#L36
 
         mu_t = target.mean((2, 3), keepdim=True)
-        hist_t = (target - mu_t).view(target.size(1), -1)  # [c, b * h * w]
+        hist_t = (target - mu_t).view(c, -1)  # [c, b * h * w]
         cov_t = hist_t @ hist_t.T / hist_t.shape[1] + eps * torch.eye(hist_t.shape[0], device=target.device)
 
         mu_s = source.mean((2, 3), keepdim=True)
-        hist_s = (source - mu_s).view(source.size(1), -1)
+        hist_s = (source - mu_s).view(c, -1)
         cov_s = hist_s @ hist_s.T / hist_s.shape[1] + eps * torch.eye(hist_s.shape[0], device=target.device)
 
         if mode == "chol":
@@ -43,9 +41,9 @@ def hist_match(target: Tensor, source: Tensor, mode: str = "pca", eps: float = 1
             QtCsQt = eve_QtCsQt @ torch.sqrt(torch.diag(eva_QtCsQt)) @ eve_QtCsQt.T
             matched = torch.inverse(Qt) @ QtCsQt @ torch.inverse(Qt) @ hist_t
 
-        matched = matched.view(b, c, h, w) + mu_s
+        matched = matched.view(c, b, h, w) + mu_s
 
-    return to_nhwc(matched)
+    return matched.permute(1, 2, 3, 0)
 
 
 def cdf_match(target: Tensor, source: Tensor, bins: int = 256):
