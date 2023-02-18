@@ -2,7 +2,7 @@ import torch
 from torch import Tensor
 
 
-def hist_match(target: Tensor, source: Tensor, mode: str = "pca", eps: float = 1e-6):
+def hist_match(target: Tensor, source: Tensor, mode: str = "chol", eps: float = 1):
     target = target.permute(3, 0, 1, 2)
     source = source.permute(3, 0, 1, 2)
     c, b, h, w = target.shape

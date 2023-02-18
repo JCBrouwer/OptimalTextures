@@ -138,16 +138,16 @@ class OptimalTexture(torch.nn.Module):
         return pastiche
 
 
-def random_rotation(N: int, device: torch.device):
+def random_rotation(N: int):
     """
     Draws random N-dimensional rotation matrix (det = 1, inverse = transpose) from the special orthogonal group
 
     From https://github.com/scipy/scipy/blob/5ab7426247900db9de856e790b8bea1bd71aec49/scipy/stats/_multivariate.py#L3309
     """
-    H = torch.eye(N, device=device)
-    D = torch.empty((N,), device=device)
+    H = torch.eye(N)
+    D = torch.empty((N,))
     for n in range(N - 1):
-        x = torch.randn(N - n, device=device)
+        x = torch.randn(N - n)
         norm2 = x @ x
         x0 = x[0].clone()
         D[n] = torch.sign(torch.sign(x[0]) + 0.5)
@@ -160,7 +160,7 @@ def random_rotation(N: int, device: torch.device):
 
 
 def optimal_transport(pastiche_feature: Tensor, style_feature: Tensor, hist_mode: str):
-    rotation = random_rotation(pastiche_feature.shape[-1], pastiche_feature.device)
+    rotation = random_rotation(pastiche_feature.shape[-1]).to(pastiche_feature)
 
     rotated_pastiche = pastiche_feature @ rotation
     rotated_style = style_feature @ rotation
@@ -260,19 +260,19 @@ if __name__ == "__main__":
         )
 
         texturizer = OptimalTexture(
-            args.size,
-            args.iters,
-            args.passes,
-            args.hist_mode,
-            args.color_transfer,
-            args.content_strength,
-            args.style_scale,
-            args.mixing_alpha,
-            args.no_pca,
-            args.no_multires,
+            size=args.size,
+            iters=args.iters,
+            passes=args.passes,
+            hist_mode=args.hist_mode,
+            color_transfer=args.color_transfer,
+            content_strength=args.content_strength,
+            style_scale=args.style_scale,
+            mixing_alpha=args.mixing_alpha,
+            no_pca=args.no_pca,
+            no_multires=args.no_multires,
         ).to(pastiche)
 
-        if not args.script:
+        if args.script:
             texturizer = torch.jit.optimize_for_inference(torch.jit.script(texturizer))
         if args.compile:
             texturizer = torch.compile(texturizer)
