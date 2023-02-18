@@ -230,10 +230,10 @@ if __name__ == "__main__":
     parser.add_argument("--no_multires", action="store_true", help="Disable multi-scale rendering (slower, less long-range texture qualities).")
     parser.add_argument("--seed", type=int, default=None, help="Seed for the random number generator.")
     parser.add_argument("--no_tf32", action="store_true", help="Disable tf32 format (probably slower).")
-    parser.add_argument("--cudnn_benchmark", action="store_true", help="Enable CUDNN benchmarking (probably slower unless doing a lot of iterations).")
+    parser.add_argument("--cudnn_benchmark", action="store_true", help="Enable CUDNN benchmarking (probably slower unless doing a high number of iterations).")
     parser.add_argument("--compile", action="store_true", help="Use PyTorch 2.0 compile function to optimize the model.")
-    parser.add_argument("--no_script", action="store_true", help="Disable PyTorch JIT script function to optimize the model.")
-    parser.add_argument("--device", type=str, default="cuda:0", help="Which device to run on.")
+    parser.add_argument("--script", action="store_true", help="Use PyTorch JIT script function to optimize the model.")
+    parser.add_argument("--device", type=str, default=None, help="Which device to run on.")
     parser.add_argument("--memory_format", type=str, default="contiguous", choices=["contiguous", "channels_last"], help="Which memory format to use for optimization.")
     parser.add_argument("--output_dir", type=str, default="output/", help="Directory to output results.")
     args = parser.parse_args()
@@ -243,19 +243,20 @@ if __name__ == "__main__":
     torch.backends.cudnn.allow_tf32 = not args.no_tf32
     torch.backends.cuda.matmul.allow_tf32 = not args.no_tf32
     memory_format = torch.contiguous_format if args.memory_format == "contiguous" else torch.channels_last
+    device = "cuda" if torch.cuda.is_available() else "cpu"
 
     if args.seed is not None:
         torch.manual_seed(args.seed)
 
     with torch.inference_mode():
         styles = load_styles(
-            args.style, size=args.size, scale=args.style_scale, device=args.device, memory_format=memory_format
+            args.style, size=args.size, scale=args.style_scale, device=device, memory_format=memory_format
         )
         if len(styles) > 1:
             assert styles[0].shape == styles[1].shape, "Style images must have the same shape"
-        content = maybe_load_content(args.content, size=args.size, device=args.device, memory_format=memory_format)
-        pastiche = torch.rand(
-            content.shape if content is not None else (args.batch, 3, args.size, args.size), device=args.device
+        content = maybe_load_content(args.content, size=args.size, device=device, memory_format=memory_format)
+        pastiche = torch.rand(content.shape if content is not None else (args.batch, 3, args.size, args.size)).to(
+            device=device, memory_format=memory_format
         )
 
         texturizer = OptimalTexture(
@@ -271,7 +272,7 @@ if __name__ == "__main__":
             args.no_multires,
         ).to(pastiche)
 
-        if not args.no_script:
+        if not args.script:
             texturizer = torch.jit.optimize_for_inference(torch.jit.script(texturizer))
         if args.compile:
             texturizer = torch.compile(texturizer)
