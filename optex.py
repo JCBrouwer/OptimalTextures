@@ -9,6 +9,7 @@ from torch.nn.functional import interpolate
 from histmatch import hist_match
 from util import get_iters_and_sizes, get_size, load_styles, maybe_load_content, resize, save_image, to_nchw, to_nhwc
 from vgg import Decoder, Encoder
+from scipy.stats import special_ortho_group
 
 
 class OptimalTexture(torch.nn.Module):
@@ -138,25 +139,29 @@ class OptimalTexture(torch.nn.Module):
         return pastiche
 
 
-def random_rotation(N: int):
+def random_rotation(N: int, device: str = "cpu", impl: str = "scipy"):
     """
     Draws random N-dimensional rotation matrix (det = 1, inverse = transpose) from the special orthogonal group
-
     From https://github.com/scipy/scipy/blob/5ab7426247900db9de856e790b8bea1bd71aec49/scipy/stats/_multivariate.py#L3309
     """
-    H = torch.eye(N)
-    D = torch.empty((N,))
-    for n in range(N - 1):
-        x = torch.randn(N - n)
-        norm2 = x @ x
-        x0 = x[0].clone()
-        D[n] = torch.sign(torch.sign(x[0]) + 0.5)
-        x[0] += D[n] * torch.sqrt(norm2)
-        x /= torch.sqrt((norm2 - x0**2 + x[0] ** 2) / 2.0)
-        H[:, n:] -= torch.outer(H[:, n:] @ x, x)
-    D[-1] = (-1) ** (N - 1) * D[:-1].prod()
-    H = (D * H.T).T
-    return H
+
+    if impl == "scipy":
+        return torch.tensor(special_ortho_group.rvs(N), device=device)
+
+    else:  # impl == 'torch'
+        H = torch.eye(N, device=device)
+        D = torch.empty((N,), device=device)
+        for n in range(N - 1):
+            x = torch.randn(N - n, device=device)
+            norm2 = x @ x
+            x0 = x[0].clone()
+            D[n] = torch.sign(torch.sign(x[0]) + 0.5)
+            x[0] += D[n] * torch.sqrt(norm2)
+            x /= torch.sqrt((norm2 - x0**2 + x[0] ** 2) / 2.0)
+            H[:, n:] -= torch.outer(H[:, n:] @ x, x)
+        D[-1] = (-1) ** (N - 1) * D[:-1].prod()
+        H = (D * H.T).T
+        return H
 
 
 def optimal_transport(pastiche_feature: Tensor, style_feature: Tensor, hist_mode: str):
