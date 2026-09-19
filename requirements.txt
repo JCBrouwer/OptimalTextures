@@ -1,7 +1,5 @@
-matplotlib
-numpy 
+numpy
 Pillow
 torch
 torchvision
 kornia
-tqdm

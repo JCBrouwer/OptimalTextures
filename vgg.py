@@ -136,36 +136,40 @@ feature_invertor = lambda _: [
 
 
 class Encoder(nn.Module):
-    def __init__(self, depth):
-        super(Encoder, self).__init__()
-        assert isinstance(depth, int) and 1 <= depth <= 5
-        self.depth = depth
-        self.model = nn.Sequential(*chain.from_iterable(vgg_normalized(None)[:depth]))
-        self.model.load_state_dict(torch.load(f"{os.path.dirname(__file__)}/models/vgg_normalised_conv{depth}_1.pth"))
+    """
+    Normalized VGG-19 up to relu5_1, split into the five stages that end at relu1_1 ... relu5_1. The shallower
+    encoders are prefixes of the deepest one, so a single set of weights serves every depth.
+    """
 
-    def __enter__(self):
-        return self
+    def __init__(self):
+        super().__init__()
+        self.stages = nn.ModuleList(nn.Sequential(*stage) for stage in vgg_normalized(None))
+        state_dict = torch.load(f"{os.path.dirname(__file__)}/models/vgg_normalised_conv5_1.pth")
+        flat = nn.Sequential(*chain.from_iterable(self.stages))  # the checkpoint indexes layers without stages
+        flat.load_state_dict(state_dict)
 
-    def __exit__(self, type, value, traceback):
-        del self
+    def forward(self, x, depth: int = 5):
+        """Features at relu{depth}_1 -> NHWC so that matmuls with PCA and rotations are easier"""
+        for stage in self.stages[:depth]:
+            x = stage(x)
+        return to_nhwc(x)
 
-    def forward(self, x):
-        return to_nhwc(self.model(x))  # -> NHWC so that matmuls with PCA and rotations are easier
+    def pyramid(self, x):
+        """Features at relu1_1 ... relu5_1 from a single pass"""
+        features = []
+        for stage in self.stages:
+            x = stage(x)
+            features.append(to_nhwc(x))
+        return features
 
 
 class Decoder(nn.Module):
     def __init__(self, depth):
-        super(Decoder, self).__init__()
+        super().__init__()
         assert isinstance(depth, int) and 1 <= depth <= 5
         self.depth = depth
         self.model = nn.Sequential(*chain.from_iterable(feature_invertor(None)[-depth:]))
         self.model.load_state_dict(torch.load(f"{os.path.dirname(__file__)}/models/feature_invertor_conv{depth}_1.pth"))
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, type, value, traceback):
-        del self
 
     def forward(self, x):
         return self.model(to_nchw(x))

@@ -79,9 +79,10 @@ def get_iters_and_sizes(size: int, iters: int, passes: int, use_multires: bool):
         iters_per_pass = np.ones(passes) * int(iters / passes)
         sizes = np.array([size] * passes)
 
-    proportion_per_layer = np.array([64, 128, 256, 512, 512]) + 64
+    # in the order the layers are optimized: relu5_1 -> relu1_1
+    proportion_per_layer = np.array([512, 512, 256, 128, 64]) + 64
     proportion_per_layer = proportion_per_layer / np.sum(proportion_per_layer)
-    iters = (iters_per_pass[:, None] * proportion_per_layer[None, :]).astype(np.int32)
+    iters = np.maximum(1, iters_per_pass[:, None] * proportion_per_layer[None, :]).astype(np.int32)
 
     return iters.tolist(), sizes.tolist()
 
