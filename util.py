@@ -57,6 +57,8 @@ def save_image(output: Tensor, args: Namespace):
         outs += ["scale" + str(args.style_scale)]
     if args.color_transfer is not None:
         outs += [args.color_transfer]
+    if args.refine > 0:
+        outs += ["refine" + str(args.refine)]
     outs += [str(args.size)]
     outname = "_".join(outs)
     for o, out in enumerate(output):

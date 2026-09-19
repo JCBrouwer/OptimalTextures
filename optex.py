@@ -7,7 +7,7 @@ from kornia.color.hls import hls_to_rgb, rgb_to_hls
 from torch import Tensor
 from torch.nn.functional import interpolate
 
-from histmatch import LINEAR_MODES, hist_match
+from histmatch import LINEAR_MODES, hist_match, quantiles
 from util import get_iters_and_sizes, get_size, load_styles, maybe_load_content, resize, save_image, to_nchw, to_nhwc
 from vgg import Decoder, Encoder
 
@@ -198,6 +198,68 @@ class Identity:
         return tensor
 
 
+def sliced_wasserstein_loss(features: Tensor, sorted_style: Tensor, rotation: Tensor):
+    """
+    Squared distance between the sorted projections of features and style, i.e. how far hist_match would have to move
+    the features along every axis of the rotation. From "A Sliced Wasserstein Loss for Neural Texture Synthesis"
+    (Heitz et al., 2021). sorted_style is already rotated, sorted and resampled to the number of feature samples.
+    """
+    b, h, w, c = features.shape
+    projected = (features.reshape(b, h * w, c) @ rotation).transpose(1, 2)
+    return (projected.sort(dim=-1).values - sorted_style).square().mean()
+
+
+def refine(
+    pastiche: Tensor,
+    styles: List[Tensor],
+    encoder: Encoder,
+    steps: int = 100,
+    lr: float = 0.02,
+    content_strength: float = 0.0,
+    style_scale: float = 1.0,
+    verbose: bool = False,
+):
+    """
+    Polish the decoded image by gradient descent on the same objective, through the encoder only. The decoders are
+    what limits the sharpness of the feed-forward result: they were trained to invert VGG features on photographs and
+    blur whatever they have not seen. Starting from the optimal transport result, a few dozen steps are enough.
+    """
+    assert len(styles) == 1, "Refinement needs a single style image to compare with"
+    encoder.requires_grad_(False)
+
+    with torch.no_grad():
+        size = pastiche.shape[-2:]
+        style_pyramid = encoder.pyramid(resize(styles[0], size=get_size(size[0], style_scale, *styles[0].shape[2:])))
+        anchor = encoder(pastiche, 4) if content_strength > 0 else None  # keeps the content's structure in place
+
+    pastiche = pastiche.detach().clone().requires_grad_(True)
+    optimizer = torch.optim.Adam([pastiche], lr=lr)
+    schedule = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=steps)
+
+    for step in range(steps):
+        optimizer.zero_grad(set_to_none=True)
+        pyramid = encoder.pyramid(pastiche)
+        loss = pastiche.new_zeros(())
+        for features, style_features in zip(pyramid, style_pyramid):
+            c = features.shape[-1]
+            rotation = random_rotation(c, features.device, features.dtype)
+            with torch.no_grad():
+                sorted_style = (style_features.reshape(-1, c) @ rotation).T.sort(dim=-1).values
+                sorted_style = quantiles(sorted_style, features.shape[1] * features.shape[2])
+            loss = loss + sliced_wasserstein_loss(features, sorted_style, rotation)
+        if anchor is not None:
+            loss = loss + content_strength * (pyramid[3] - anchor).square().mean()
+        loss.backward()
+        optimizer.step()
+        schedule.step()
+        with torch.no_grad():
+            pastiche.clamp_(0, 1)
+        if verbose and step % 10 == 0:
+            print(f"Refine step {step}, loss {loss.item():.4f}")
+
+    return pastiche.detach()
+
+
 def mix_style_features(style_features: List[Tensor], mixing_mask: Tensor, mixing_alpha: float, hist_mode: str):
     i = mixing_alpha
 
@@ -242,6 +304,7 @@ if __name__ == "__main__":
     parser.add_argument("--no_pca", action="store_true", help="Disable PCA of features (slower).")
     parser.add_argument("--pca_variance", type=float, default=0.99, help="Fraction of the style features' variance that the principal components should explain.")
     parser.add_argument("--no_multires", action="store_true", help="Disable multi-scale rendering (slower, less long-range texture qualities).")
+    parser.add_argument("--refine", type=int, default=0, help="Number of gradient descent steps on a sliced Wasserstein loss to sharpen the result with afterwards (slower, higher quality). 100 is a good start.")
     parser.add_argument("--seed", type=int, default=None, help="Seed for the random number generator.")
     parser.add_argument("--no_tf32", action="store_true", help="Disable tf32 format (probably slower).")
     parser.add_argument("--cudnn_benchmark", action="store_true", help="Enable CUDNN benchmarking (probably slower unless doing a high number of iterations).")
@@ -291,6 +354,12 @@ if __name__ == "__main__":
 
         t = time()
         pastiche = texturizer.forward(pastiche, styles, content, verbose=True)
-        print("Took:", time() - t)
+
+    if args.refine > 0:
+        strength = args.content_strength if content is not None else 0.0
+        pastiche = refine(
+            pastiche, styles, texturizer.encoder, args.refine, 0.02, strength, args.style_scale, verbose=True
+        )
+    print("Took:", time() - t)
 
     save_image(pastiche, args)
